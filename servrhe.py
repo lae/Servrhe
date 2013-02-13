@@ -3,7 +3,7 @@
 
 LOCAL = False
 
-# RHE-proofing. Auto-installs dependecies for you!
+# RHE-proofing. Auto-installs dependencies for you!
 
 # Pip
 try:
@@ -197,7 +197,7 @@ class Servrhe(irc.IRCClient):
     rips = False
     bots = False
     
-    # Bot maintence
+    # Bot maintenance
     def signedOn(self):
         self.msg("NickServ","IDENTIFY %s" % self.factory.password)
         self.rips = {}
