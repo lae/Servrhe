@@ -194,6 +194,10 @@ class ServrheObserver(FileSystemEventHandler):
 
 class Servrhe(irc.IRCClient):
     nickname = "ServrheV2"
+    versionName = "Servrhe (Custom Bot)"
+    versionNum = "1.0"
+    versionEnv = "Twisted-Python"
+    sourceURL = "https://github.com/Fugiman/Servrhe"
     rips = False
     bots = False
     
