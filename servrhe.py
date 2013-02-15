@@ -39,13 +39,14 @@ except ImportError, e:
 # Actual bot stuff
 from twisted.internet import reactor, protocol, task, utils, defer
 from twisted.words.protocols import irc
+from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
 from twisted.web.client import Agent, FileBodyProducer
 from twisted.web.http_headers import Headers
 from StringIO import StringIO
 from functools import wraps
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import re, urllib, json, os, inspect, datetime, fnmatch, ctypes, sys
+import re, urllib, json, os, inspect, datetime, fnmatch, ctypes, sys, binascii
 
 logs = []
 def log(*params):
@@ -102,6 +103,10 @@ def bytes2human(num):
         num /= 1024.0
     return "%3.1f%s" % (num, 'TB')
 
+def search(pattern, files):
+    file = fnmatch.filter(files, pattern)
+    return file[0] if file else None
+
 class BodyStringifier(protocol.Protocol):
     def __init__(self, deferred):
         self.deferred = deferred
@@ -145,6 +150,17 @@ if LOCAL:
     GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
     IsWindowVisible = ctypes.windll.user32.IsWindowVisible
     GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+
+class ServrheDownloader(protocol.Protocol):
+    def __init__(self, name):
+        self.file = open(name, "wb")
+        self.len = 0
+    def dataReceived(self, data):
+        self.file.write(data)
+        self.len += len(data)
+    def done(self):
+        self.file.close()
+        return self.len
 
 class ServrheDCC(irc.DccFileReceive):
     # Small wrapper so we know when the file is done
@@ -411,6 +427,9 @@ class Servrhe(irc.IRCClient):
         if position not in self.factory.positions:
             self.msg(channel, "%s is not a valid position. Try %s, or %s." % (msg[0], ", ".join(self.factory.positions[:-1]), self.factory.positions[-1]))
             return
+        if position == "qc":
+            self.msg(channel, "Can't use .done qc, you must use .finished instead")
+            return
         show = self.factory.resolve(" ".join(msg[1:]), channel)
         if show is None:
             return
@@ -440,6 +459,94 @@ class Servrhe(irc.IRCClient):
             return
         self.msg(channel, "%s is marked as completed for the week" % show["series"])
         self.factory.update_topic()
+
+    @admin
+    @defer.inlineCallbacks
+    def cmd_fakefinished(self, user, channel, msg):
+        """.finished [show name] || .finished Accel World || Marks a show as released"""
+        show = self.factory.resolve(" ".join(msg), channel)
+        if show is None:
+            return
+        # Step 1: Search FTP for complete episode, or premux + xdelta
+        ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
+        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], show["current_ep"] + 1))
+        filelist = FTPFileListProtocol()
+        yield ftp.list(".", filelist)
+        files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
+        xdelta = search("*.xdelta", files)
+        premux = search("*_premux.mkv", files)
+        complete = search("[[]Commie[]]*.mkv", files)
+        if complete:
+            # Step 1a: Download completed file
+            self.notice(user, "Found complete file: {}".format(complete))
+            complete_len = [x["size"] for x in filelist.files if x["filename"] == complete][0]
+            complete_downloader = ServrheDownloader(complete)
+            yield ftp.retrieveFile(complete, complete_downloader)
+            if complete_downloader.done() != complete_len:
+                self.msg(channel, "Aborted finishing {}: Download of complete file had incorrect size.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+        elif xdelta and premux:
+            # Step 1b: Download premux + xdelta, merge into completed file
+            self.notice(user, "Found xdelta and premux: {} and {}".format(xdelta, premux))
+            premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+            premux_downloader = ServrheDownloader(premux)
+            yield ftp.retrieveFile(premux, premux_downloader)
+            if premux_downloader.done() != premux_len:
+                self.msg(channel, "Aborted finishing {}: Download of premux file had incorrect size.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+            xdelta_len = [x["size"] for x in filelist.files if x["filename"] == xdelta][0]
+            xdelta_downloader = ServrheDownloader(xdelta)
+            yield ftp.retrieveFile(xdelta, xdelta_downloader)
+            if xdelta_downloader.done() != xdelta_len:
+                self.msg(channel, "Aborted finishing {}: Download of xdelta file had incorrect size.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+            code = yield utils.getProcessValue(getPath("xdelta3"), args=["-f","-d",xdelta], env=os.environ)
+            if code != 0:
+                self.msg(channel, "Aborted finishing {}: Couldn't merge premux and xdelta.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+            complete = search("[[]Commie[]]*.mkv", os.listdir("."))
+            if not complete:
+                self.msg(channel, "Aborted finishing {}: Couldn't find completed file after merging.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+            os.remove(xdelta)
+            os.remove(premux)
+        else:
+            self.msg(channel, "Aborted finishing {}: Couldn't find completed episode.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        yield ftp.quit()
+        ftp.fail(None)
+        # Step 1c: Verify CRC
+        crc = complete[-13:-5] # Extract CRC from filename
+        try:
+            with open(complete,"rb") as f:
+                calc = "{:08X}".format(binascii.crc32(f.read()) & 0xFFFFFFFF)
+        except:
+            self.msg(channel, "Aborted finishing {}: Couldn't open completed file for CRC verification.".format(show["series"]))
+            return
+        if crc != calc:
+            self.msg(channel, "Aborted finishing {}: CRC failed verification. Filename = '{}', Calculated = '{}'.".format(show["series"], crc, calc))
+            return
+        # Step 2: Create torrent
+        self.msg(channel, "Aborted finishing {}: Couldn't create torrent.".format(show["series"]))
+        # Step 3: Upload episode to XDCC bot
+        # Step 4: Upload episode to seedbox
+        # Step 5: Upload torrent to Nyaa
+        # Step 6: Get torrent link from Nyaa
+        # Step 7: Upload torrent link to TT
+        # Step 8: Create blog post
+        # Step 9: Start seeding torrent
     
     @admin
     @defer.inlineCallbacks
@@ -841,6 +948,11 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     dcc_destdir = "C:/"
     ass_destdir = "C:/"
     ftp_location = ""
+    # Release config
+    ftp_host = ""
+    ftp_port = 21
+    ftp_user = ""
+    ftp_pass = ""
     # Showtime config
     key = ""
     base = "http://commie.milkteafuzz.com/st"
@@ -944,7 +1056,11 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.releases = [str(b) for b in config["releases"]] if "releases" in config else self.releases
                 self.dcc_destdir = str(config["dcc_destdir"]) if "dcc_destdir" in config else self.dcc_destdir
                 self.ass_destdir = str(config["ass_destdir"]) if "ass_destdir" in config else self.ass_destdir
-                self.ftp_location = str(config["ftp_location"]) if "ftp_location" in config else self.ass_destdir
+                self.ftp_location = str(config["ftp_location"]) if "ftp_location" in config else self.ftp_location
+                self.ftp_host = str(config["ftp_host"]) if "ftp_host" in config else self.ftp_host
+                self.ftp_port = int(config["ftp_port"]) if "ftp_port" in config else self.ftp_port
+                self.ftp_user = str(config["ftp_user"]) if "ftp_user" in config else self.ftp_user
+                self.ftp_pass = str(config["ftp_pass"]) if "ftp_pass" in config else self.ftp_pass
                 self.key = str(config["key"]) if "key" in config else self.key
                 self.base = str(config["base"]) if "base" in config else self.base
                 self.positions = [str(b) for b in config["positions"]] if "positions" in config else self.positions
@@ -965,13 +1081,17 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["dcc_destdir"] = self.dcc_destdir
         config["ass_destdir"] = self.ass_destdir
         config["ftp_location"] = self.ftp_location
+        config["ftp_host"] = self.ftp_host
+        config["ftp_port"] = self.ftp_port
+        config["ftp_user"] = self.ftp_user
+        config["ftp_pass"] = self.ftp_pass
         config["key"] = self.key
         config["base"] = self.base
         config["positions"] = self.positions
         config["observe_dir"] = self.observe_dir
         config["highlights"] = self.highlights
         config["topic"] = self.topic
-        data = json.dumps(config)
+        data = json.dumps(config, sort_keys=True, indent=2)
         with open("servrhe.json","w") as f:
             f.write(data)
 
