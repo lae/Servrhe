@@ -40,13 +40,15 @@ except ImportError, e:
 from twisted.internet import reactor, protocol, task, utils, defer
 from twisted.words.protocols import irc
 from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
+from twisted.web.iweb import IBodyProducer
 from twisted.web.client import Agent, FileBodyProducer
 from twisted.web.http_headers import Headers
+from zope.interface import implements
 from StringIO import StringIO
 from functools import wraps
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import re, urllib, json, os, inspect, datetime, fnmatch, ctypes, sys, binascii
+import re, urllib, json, os, inspect, datetime, fnmatch, ctypes, sys, binascii, time, hashlib, mimetypes, cookielib
 
 logs = []
 def log(*params):
@@ -116,18 +118,19 @@ class BodyStringifier(protocol.Protocol):
     def connectionLost(self, reason):
         self.deferred.callback(self.buffer)
 
+def returnBody(response):
+    if response.code == 204:
+        d = defer.succeed("")
+    else:
+        d = defer.Deferred()
+        response.deliverBody(BodyStringifier(d))
+    return d
+
 def fetchPage(url, data=None, headers={}):
     method = "POST" if data else "GET"
     body = FileBodyProducer(StringIO(data)) if data else None
     d = Agent(reactor).request(method, url, Headers(headers), body)
-    def handler(response):
-        if response.code == 204:
-            d = defer.succeed("")
-        else:
-            d = defer.Deferred()
-            response.deliverBody(BodyStringifier(d))
-        return d
-    d.addCallback(handler)
+    d.addCallback(returnBody)
     return d
 
 def getPath(cmd):
@@ -142,6 +145,71 @@ def getPath(cmd):
                 return r
     raise Exception("No valid path found for "+cmd)
 
+
+### Copy-Pasted from https://github.com/russss/Herd/blob/master/BitTornado/bencode.py
+from types import IntType, LongType, StringType, ListType, TupleType, DictType
+try:
+    from types import BooleanType
+except ImportError:
+    BooleanType = None
+try:
+    from types import UnicodeType
+except ImportError:
+    UnicodeType = None
+
+bencached_marker = []
+class Bencached:
+    def __init__(self, s):
+        self.marker = bencached_marker
+        self.bencoded = s
+BencachedType = type(Bencached('')) # insufficient, but good as a filter
+
+bencode_func = {
+    BencachedType: lambda x: [x.bencoded],
+    IntType: lambda x: ['i',str(x),'e'],
+    LongType: lambda x: ['i',str(x),'e'],
+    StringType: lambda x: [str(len(x)),':',x],
+    ListType: lambda x: ['l'] + sum([bencode_func[type(v)](v) for v in x],[]) + ['e'],
+    TupleType: lambda x: ['l'] + sum([bencode_func[type(v)](v) for v in x],[]) + ['e'],
+    DictType: lambda x: ['d'] + sum([[str(len(k)),':',k]+bencode_func[type(v)](v) for k,v in sorted(x.items())],[]) + ['e']
+}
+if BooleanType:
+    bencode_func[BooleanType] = lambda x: ['i',str(int(x)),'e'],
+if UnicodeType:
+    bencode_func[UnicodeType] = lambda x: bencode_func[StringType](x.encode('utf-8'))
+    
+def bencode(x):
+    r = []
+    r.extend(bencode_func[type(x)](x))
+    return ''.join(r)
+
+def makeTorrent(fname):
+    data = {
+        "announce": "http://open.nyaatorrents.info:6544/announce",
+        "announce-list": [["http://open.nyaatorrents.info:6544/announce"],["udp://tracker.openbittorrent.com:80/announce"]],
+        "info": {},
+        "creation date": long(time.time()),
+        "comment": "#commie-subs@irc.rizon.net",
+        "created by": "Servrhe",
+        "encoding": "UTF-8"
+    }
+    data["info"]["name"] = unicode(fname).encode("utf-8")
+    data["info"]["length"] = size = os.path.getsize(fname)
+    # 1MB pieces if file > 512MB, else 512KB pieces
+    data["info"]["piece length"] = piece_length = 2**20 if size > 512*1024*1024 else 2**19
+    pieces = []
+    with open(fname, "rb") as f:
+        p = 0L
+        while p < size:
+            chunk = f.read(min(piece_length, size - p))
+            pieces.append(hashlib.sha1(chunk).digest())
+            p += piece_length
+    data["info"]["pieces"] = "".join(pieces)
+    torrentname = fname.rsplit(".",1)[0] + ".torrent"
+    with open(torrentname, "wb") as f:
+        f.write(bencode(data))
+    return torrentname
+
 # register winapi functions
 if LOCAL:
     EnumWindows = ctypes.windll.user32.EnumWindows
@@ -150,6 +218,168 @@ if LOCAL:
     GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
     IsWindowVisible = ctypes.windll.user32.IsWindowVisible
     GetWindowThreadProcessId = ctypes.windll.user32.GetWindowThreadProcessId
+
+# Ganked from https://github.com/mariano/pyfire/blob/master/pyfire/twistedx/producer.py
+class MultiPartProducer:
+    implements(IBodyProducer)
+    CHUNK_SIZE = 2 ** 14
+    def __init__(self, files={}, data={}, callback=None, deferred=None):
+        self._files = files
+        self._file_lengths = {}
+        self._data = data
+        self._callback = callback
+        self._deferred = deferred
+        self.boundary = self._boundary()
+        self.length = self._length()
+    def startProducing(self, consumer):
+        self._consumer = consumer
+        self._current_deferred = defer.Deferred()
+        self._sent = 0
+        self._paused = False
+        if not hasattr(self, "_chunk_headers"):
+            self._build_chunk_headers()
+        if self._data:
+            block = ""
+            for field in self._data:
+                block += self._chunk_headers[field]
+                block += self._data[field]
+                block += "\r\n"
+            self._send_to_consumer(block)
+        if self._files:
+            self._files_iterator = self._files.iterkeys()
+            self._files_sent = 0
+            self._files_length = len(self._files)
+            self._current_file_path = None
+            self._current_file_handle = None
+            self._current_file_length = None
+            self._current_file_sent = 0
+            result = self._produce()
+            if result:
+                return result
+        else:
+            return defer.succeed(None)
+        return self._current_deferred
+    def resumeProducing(self):
+        self._paused = False
+        result = self._produce()
+        if result:
+            return result
+    def pauseProducing(self):
+        self._paused = True
+    def stopProducing(self):
+        self._finish(True)
+        if self._deferred and self._sent < self.length:
+            self._deferred.errback(Exception("Consumer asked to stop production of request body (%d sent out of %d)" % (self._sent, self.length)))
+    def _produce(self):
+        if self._paused:
+            return
+        done = False
+        while not done and not self._paused:
+            if not self._current_file_handle:
+                field = self._files_iterator.next()
+                self._current_file_path = self._files[field]
+                self._current_file_sent = 0
+                self._current_file_length = self._file_lengths[field]
+                self._current_file_handle = open(self._current_file_path, "r")
+                self._send_to_consumer(self._chunk_headers[field])
+            chunk = self._current_file_handle.read(self.CHUNK_SIZE)
+            if chunk:
+                self._send_to_consumer(chunk)
+                self._current_file_sent += len(chunk)
+            if not chunk or self._current_file_sent == self._current_file_length:
+                self._send_to_consumer("\r\n")
+                self._current_file_handle.close()
+                self._current_file_handle = None
+                self._current_file_sent = 0
+                self._current_file_path = None
+                self._files_sent += 1
+            if self._files_sent == self._files_length:
+                done = True
+        if done:
+            self._send_to_consumer("--%s--\r\n" % self.boundary)
+            self._finish()
+            return defer.succeed(None)
+    def _finish(self, forced=False):
+        if hasattr(self, "_current_file_handle") and self._current_file_handle:
+            self._current_file_handle.close()
+        if self._current_deferred:
+            self._current_deferred.callback(self._sent)
+            self._current_deferred = None
+        if not forced and self._deferred:
+            self._deferred.callback(self._sent)
+    def _send_to_consumer(self, block):
+        self._consumer.write(block)
+        self._sent += len(block)
+        if self._callback:
+            self._callback(self._sent, self.length)
+    def _length(self):
+        self._build_chunk_headers()
+        length = 0
+        if self._data:
+            for field in self._data:
+                length += len(self._chunk_headers[field])
+                length += len(self._data[field])
+                length += 2
+        if self._files:
+            for field in self._files:
+                length += len(self._chunk_headers[field])
+                length += self._file_size(field)
+                length += 2
+        length += len(self.boundary)
+        length += 6
+        return length
+    def _build_chunk_headers(self):
+        if hasattr(self, "_chunk_headers") and self._chunk_headers:
+            return
+        self._chunk_headers = {}
+        for field in self._files:
+            self._chunk_headers[field] = self._headers(field, True)
+        for field in self._data:
+            self._chunk_headers[field] = self._headers(field)
+    def _headers(self, name, is_file=False):
+        value = self._files[name] if is_file else self._data[name]
+        _boundary = self.boundary.encode("utf-8") if isinstance(self.boundary, unicode) else urllib.quote_plus(self.boundary)
+        headers = ["--%s" % _boundary]
+        if is_file:
+            disposition = 'form-data; name="%s"; filename="%s"' % (name, os.path.basename(value))
+        else:
+            disposition = 'form-data; name="%s"' % name
+        headers.append("Content-Disposition: %s" % disposition)
+        if is_file:
+            file_type = self._file_type(name)
+        else:
+            file_type = "text/plain; charset=utf-8"
+        headers.append("Content-Type: %s" % file_type)
+        if is_file:
+            headers.append("Content-Length: %i" % self._file_size(name))
+        else:
+            headers.append("Content-Length: %i" % len(value))
+        headers.append("")
+        headers.append("")
+        return "\r\n".join(headers)
+    def _boundary(self):
+        boundary = None
+        try:
+            import uuid
+            boundary = uuid.uuid4().hex
+        except ImportError:
+            import random, sha
+            bits = random.getrandbits(160)
+            boundary = sha.new(str(bits)).hexdigest()
+        return boundary
+    def _file_type(self, field):
+        type = mimetypes.guess_type(self._files[field])[0]
+        return type.encode("utf-8") if isinstance(type, unicode) else str(type)
+    def _file_size(self, field):
+        size = 0
+        try:
+            handle = open(self._files[field], "r")
+            size = os.fstat(handle.fileno()).st_size
+            handle.close()
+        except:
+            size = 0
+        self._file_lengths[field] = size
+        return self._file_lengths[field]
 
 class ServrheDownloader(protocol.Protocol):
     def __init__(self, name):
@@ -402,6 +632,13 @@ class Servrhe(irc.IRCClient):
     
     @admin
     @defer.inlineCallbacks
+    def cmd_refresh(self, user, channel, msg):
+        """.refresh || .refresh || Refresh show cache"""
+        yield self.factory.refresh_shows()
+        self.msg(channel, "Show cache refreshed")
+    
+    @admin
+    @defer.inlineCallbacks
     def cmd_assign(self, user, channel, msg):
         """.assign [position] [victim] [show name] || .assign timer Fugiman Accel World || Assigns the victim to the position for the show"""
         position = msg[0]
@@ -461,15 +698,31 @@ class Servrhe(irc.IRCClient):
         self.factory.update_topic()
 
     @admin
+    def cmd_maketorrent(self, user, channel, msg):
+        complete = search("[[]Commie[]]*.mkv", [f for f in os.listdir('.') if os.path.isfile(f)])
+        if complete:
+            torrent = makeTorrent(complete)
+            self.msg(channel, "Torrent for '{}' created as '{}'".format(complete, torrent))
+        else:
+            self.msg(channel, "Couldn't find episode to make torrent for")
+
+    @admin
     @defer.inlineCallbacks
-    def cmd_fakefinished(self, user, channel, msg):
-        """.finished [show name] || .finished Accel World || Marks a show as released"""
+    def cmd_release(self, user, channel, msg):
+        """.release [show name] || .release Accel World || Release the show"""
         show = self.factory.resolve(" ".join(msg), channel)
         if show is None:
             return
+        if not show["folder"]:
+            self.msg(channel, "No FTP folder given for {}".format(show["series"]))
+            return
+        if not show["xdcc_folder"]:
+            self.msg(channel, "No XDCC folder given for {}".format(show["series"]))
+            return
+
         # Step 1: Search FTP for complete episode, or premux + xdelta
         ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
-        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], show["current_ep"] + 1))
+        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], show["current_ep"] + 0))
         filelist = FTPFileListProtocol()
         yield ftp.list(".", filelist)
         files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
@@ -483,7 +736,7 @@ class Servrhe(irc.IRCClient):
             complete_downloader = ServrheDownloader(complete)
             yield ftp.retrieveFile(complete, complete_downloader)
             if complete_downloader.done() != complete_len:
-                self.msg(channel, "Aborted finishing {}: Download of complete file had incorrect size.".format(show["series"]))
+                self.msg(channel, "Aborted releasing {}: Download of complete file had incorrect size.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
@@ -494,7 +747,7 @@ class Servrhe(irc.IRCClient):
             premux_downloader = ServrheDownloader(premux)
             yield ftp.retrieveFile(premux, premux_downloader)
             if premux_downloader.done() != premux_len:
-                self.msg(channel, "Aborted finishing {}: Download of premux file had incorrect size.".format(show["series"]))
+                self.msg(channel, "Aborted releasing {}: Download of premux file had incorrect size.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
@@ -502,26 +755,27 @@ class Servrhe(irc.IRCClient):
             xdelta_downloader = ServrheDownloader(xdelta)
             yield ftp.retrieveFile(xdelta, xdelta_downloader)
             if xdelta_downloader.done() != xdelta_len:
-                self.msg(channel, "Aborted finishing {}: Download of xdelta file had incorrect size.".format(show["series"]))
+                self.msg(channel, "Aborted releasing {}: Download of xdelta file had incorrect size.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
             code = yield utils.getProcessValue(getPath("xdelta3"), args=["-f","-d",xdelta], env=os.environ)
             if code != 0:
-                self.msg(channel, "Aborted finishing {}: Couldn't merge premux and xdelta.".format(show["series"]))
+                self.msg(channel, "Aborted releasing {}: Couldn't merge premux and xdelta.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
             complete = search("[[]Commie[]]*.mkv", os.listdir("."))
             if not complete:
-                self.msg(channel, "Aborted finishing {}: Couldn't find completed file after merging.".format(show["series"]))
+                self.msg(channel, "Aborted releasing {}: Couldn't find completed file after merging.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
             os.remove(xdelta)
             os.remove(premux)
+            self.notice(user, "Merged premux and xdelta")
         else:
-            self.msg(channel, "Aborted finishing {}: Couldn't find completed episode.".format(show["series"]))
+            self.msg(channel, "Aborted releasing {}: Couldn't find completed episode.".format(show["series"]))
             yield ftp.quit()
             ftp.fail(None)
             return
@@ -533,20 +787,170 @@ class Servrhe(irc.IRCClient):
             with open(complete,"rb") as f:
                 calc = "{:08X}".format(binascii.crc32(f.read()) & 0xFFFFFFFF)
         except:
-            self.msg(channel, "Aborted finishing {}: Couldn't open completed file for CRC verification.".format(show["series"]))
+            self.msg(channel, "Aborted releasing {}: Couldn't open completed file for CRC verification.".format(show["series"]))
             return
         if crc != calc:
-            self.msg(channel, "Aborted finishing {}: CRC failed verification. Filename = '{}', Calculated = '{}'.".format(show["series"], crc, calc))
+            self.msg(channel, "Aborted releasing {}: CRC failed verification. Filename = '{}', Calculated = '{}'.".format(show["series"], crc, calc))
+            os.remove(complete)
             return
+
         # Step 2: Create torrent
-        self.msg(channel, "Aborted finishing {}: Couldn't create torrent.".format(show["series"]))
-        # Step 3: Upload episode to XDCC bot
+        try:
+            torrent = makeTorrent(complete)
+        except Exception, e:
+            self.msg(channel, "Aborted releasing {}: Couldn't create torrent.".format(show["series"]))
+            os.remove(complete)
+            return
+        self.notice(user, "Created torrent")
+
+        # Step 3: Upload episode to XDCC server
+        try:
+            ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.xdcc_user, self.factory.xdcc_pass).connectTCP(self.factory.xdcc_host, self.factory.xdcc_port)
+            store, finish = ftp.storeFile("./{}/{}".format(show["xdcc_folder"],complete))
+            sender = yield store
+            with open(complete,"rb") as f:
+                sender.transport.write(f.read())
+            sender.finish()
+            yield finish
+        except:
+            self.msg(channel, "Aborted releasing {}: Couldn't upload completed episode to XDCC server.".format(show["series"]))
+            os.remove(complete)
+            os.remove(torrent)
+            return
+        self.notice(user, "Uploaded to XDCC")
+
         # Step 4: Upload episode to seedbox
+        try:
+            ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.seed_user, self.factory.seed_pass).connectTCP(self.factory.seed_host, self.factory.seed_port)
+            store, finish = ftp.storeFile("./{}/{}".format(self.factory.seed_file_folder, complete))
+            sender = yield store
+            with open(complete,"rb") as f:
+                sender.transport.write(f.read())
+            sender.finish()
+            yield finish
+        except:
+            self.msg(channel, "Aborted releasing {}: Couldn't upload completed episode to seedbox.".format(show["series"]))
+            os.remove(complete)
+            os.remove(torrent)
+            return
+        self.notice(user, "Uploaded to seedbox")
+
         # Step 5: Upload torrent to Nyaa
+        nyaagent = CookieAgent(Agent(reactor), cookielib.CookieJar())
+        response = yield nyaagent.request("POST","http://www.nyaa.eu/?page=login",
+            Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
+            FileBodyProducer(StringIO(urllib.urlencode({"loginusername": self.factory.nyaa_user,"loginpassword": self.factory.nyaa_pass}))))
+        body = yield returnBody(response)
+        if "Login successful" not in body:
+            self.msg(channel, "Aborted releasing {}: Couldn't login to Nyaa.".format(show["series"]))
+            os.remove(complete)
+            os.remove(torrent)
+            return
+        response = yield nyaagent.request("POST","http://www.nyaa.eu/?page=upload",
+            Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
+            MultiPartProducer({"torrent": torrent},{
+                "name": complete,
+                "catid": "1_37",
+                "info": "#commie-subs@irc.rizon.net",
+                "description": "Visit us at [url]http://commiesubs.com[/url] for the latest updates and news.\nFollow at [url]https://twitter.com/RHExcelion[/url].",
+                "remake": 0,
+                "anonymous": 0,
+                "hidden": 1,
+                "rules": 1,
+                "submit": "Upload"
+            }))
+        if response.code != 200:
+            nyaa_codes = {
+                418: "I'm a teapot (You're doing it wrong)",
+                460: "Missing Announce URL",
+                461: "Already Exists",
+                462: "Invalid File",
+                463: "Missing Data",
+                520: "Configuration Broken"
+            }
+            self.msg(channel, "Aborted releasing {}: Couldn't upload torrent to Nyaa. Error #{:d}: {}".format(show["series"], response.code, nyaa_codes[response.code]))
+            os.remove(complete)
+            os.remove(torrent)
+            return
+        self.notice(user, "Uploaded to Nyaa")
+
         # Step 6: Get torrent link from Nyaa
+        body = yield returnBody(response)
+        match = re.search("http://www.nyaa.eu/\?page=torrentinfo&#38;tid=[0-9]+", body)
+        if not match:
+            self.msg(channel, "Aborted releasing {}: Couldn't find torrent link in Nyaa's response.".format(show["series"]))
+            os.remove(complete)
+            os.remove(torrent)
+            return
+        info_link = match.group(0).replace("&#38;","&")
+        download_link = info_link.replace("torrentinfo","download")
+        self.notice(user, "Got Nyaa torrent link")
+
         # Step 7: Upload torrent link to TT
+        ttagent = CookieAgent(Agent(reactor), cookielib.CookieJar())
+        response = yield ttagent.request("POST","http://tokyotosho.info/login.php",
+            Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
+            FileBodyProducer(StringIO(urllib.urlencode({"username": self.factory.tt_user,"password": self.factory.tt_pass,"submit": "Submit"}))))
+        body = yield returnBody(response)
+        if "Logged in." not in body:
+            self.msg(channel, "Couldn't login to TT. Continuing to release {} regardless.".format(show["series"]))
+        else:
+            response = yield ttagent.request("POST","http://tokyotosho.info/new.php",
+                Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
+                FileBodyProducer(StringIO(urllib.urlencode({
+                    "type": 1,
+                    "url": download_link,
+                    "comment": "#commie-subs@irc.rizon.net",
+                    "website": "http://www.commiesubs.com/",
+                }))))
+            body = yield returnBody(response)
+            if "Login successful" not in body: ## TODO: What is text that is guarenteed to show up in this page??
+                self.msg(channel, "Couldn't upload torrent to TT. Continuing to release {} regardless.".format(show["series"]))
+            else:
+                self.notice(user, "Uploaded to TT")
+
         # Step 8: Create blog post
+        blogagent = CookieAgent(Agent(reactor), cookielib.CookieJar())
+        response = yield blogagent.request("POST","http://commiesubs.com/wp-login.php",
+            Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
+            FileBodyProducer(StringIO(urllib.urlencode({
+                "log": self.factory.blog_user,
+                "pwd": self.factory.blog_pass,
+                "wp-submit": "Log In",
+                "redirect_to": "http://commiesubs.com/wp-admin/",
+                "testcookie": 1,
+            }))))
+        self.msg(channel, "Couldn't create blog post. Continuing to release {} regardless.".format(show["series"]))
+        self.notice(user, "Created blog post")
+
         # Step 9: Start seeding torrent
+        try:
+            ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.seed_user, self.factory.seed_pass).connectTCP(self.factory.seed_host, self.factory.seed_port)
+            store, finish = ftp.storeFile("./{}/{}".format(self.factory.seed_torrent_folder, torrent))
+            sender = yield store
+            with open(torrent,"rb") as f:
+                sender.transport.write(f.read())
+            sender.finish()
+            yield finish
+            self.notice(user, "Seeding started")
+        except:
+            self.msg(channel, "Couldn't start seeding the torrent. Continuing to release {} regardless.".format(show["series"]))
+
+        # Step 10: Mark show finished on showtimes
+        data = yield self.factory.load("show","update", data={"id":show["id"],"method":"next_episode"})
+        if "status" in data and not data["status"]:
+            self.msg(channel, data["message"])
+            os.remove(complete)
+            os.remove(torrent)
+            return
+        self.msg(channel, "%s is marked as completed for the week" % show["series"])
+
+        # Step 11: Update the topic
+        self.factory.update_topic()
+
+        # Step 12: Clean up
+        os.remove(complete)
+        os.remove(torrent)
     
     @admin
     @defer.inlineCallbacks
@@ -953,6 +1357,22 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     ftp_port = 21
     ftp_user = ""
     ftp_pass = ""
+    xdcc_host = ""
+    xdcc_port = 21
+    xdcc_user = ""
+    xdcc_pass = ""
+    seed_host = ""
+    seed_port = 21
+    seed_user = ""
+    seed_pass = ""
+    seed_file_folder = ""
+    seed_torrent_folder = ""
+    nyaa_user = ""
+    nyaa_pass = ""
+    tt_user = ""
+    tt_pass = ""
+    blog_user = ""
+    blog_pass = ""
     # Showtime config
     key = ""
     base = "http://commie.milkteafuzz.com/st"
@@ -1061,6 +1481,22 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.ftp_port = int(config["ftp_port"]) if "ftp_port" in config else self.ftp_port
                 self.ftp_user = str(config["ftp_user"]) if "ftp_user" in config else self.ftp_user
                 self.ftp_pass = str(config["ftp_pass"]) if "ftp_pass" in config else self.ftp_pass
+                self.xdcc_host = str(config["xdcc_host"]) if "xdcc_host" in config else self.xdcc_host
+                self.xdcc_port = int(config["xdcc_port"]) if "xdcc_port" in config else self.xdcc_port
+                self.xdcc_user = str(config["xdcc_user"]) if "xdcc_user" in config else self.xdcc_user
+                self.xdcc_pass = str(config["xdcc_pass"]) if "xdcc_pass" in config else self.xdcc_pass
+                self.seed_host = str(config["seed_host"]) if "seed_host" in config else self.seed_host
+                self.seed_port = int(config["seed_port"]) if "seed_port" in config else self.seed_port
+                self.seed_user = str(config["seed_user"]) if "seed_user" in config else self.seed_user
+                self.seed_pass = str(config["seed_pass"]) if "seed_pass" in config else self.seed_pass
+                self.seed_file_folder = str(config["seed_file_folder"]) if "seed_file_folder" in config else self.seed_file_folder
+                self.seed_torrent_folder = str(config["seed_torrent_folder"]) if "seed_torrent_folder" in config else self.seed_torrent_folder
+                self.nyaa_user = str(config["nyaa_user"]) if "nyaa_user" in config else self.nyaa_user
+                self.nyaa_pass = str(config["nyaa_pass"]) if "nyaa_pass" in config else self.nyaa_pass
+                self.tt_user = str(config["tt_user"]) if "tt_user" in config else self.tt_user
+                self.tt_pass = str(config["tt_pass"]) if "tt_pass" in config else self.tt_pass
+                self.blog_user = str(config["blog_user"]) if "blog_user" in config else self.blog_user
+                self.blog_pass = str(config["blog_pass"]) if "blog_pass" in config else self.blog_pass
                 self.key = str(config["key"]) if "key" in config else self.key
                 self.base = str(config["base"]) if "base" in config else self.base
                 self.positions = [str(b) for b in config["positions"]] if "positions" in config else self.positions
@@ -1085,6 +1521,22 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["ftp_port"] = self.ftp_port
         config["ftp_user"] = self.ftp_user
         config["ftp_pass"] = self.ftp_pass
+        config["xdcc_host"] = self.xdcc_host
+        config["xdcc_port"] = self.xdcc_port
+        config["xdcc_user"] = self.xdcc_user
+        config["xdcc_pass"] = self.xdcc_pass
+        config["seed_host"] = self.seed_host
+        config["seed_port"] = self.seed_port
+        config["seed_user"] = self.seed_user
+        config["seed_pass"] = self.seed_pass
+        config["seed_file_folder"] = self.seed_file_folder
+        config["seed_torrent_folder"] = self.seed_torrent_folder
+        config["nyaa_user"] = self.nyaa_user
+        config["nyaa_pass"] = self.nyaa_pass
+        config["tt_user"] = self.tt_user
+        config["tt_pass"] = self.tt_pass
+        config["blog_user"] = self.blog_user
+        config["blog_pass"] = self.blog_pass
         config["key"] = self.key
         config["base"] = self.base
         config["positions"] = self.positions
