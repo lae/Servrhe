@@ -1,4 +1,5 @@
 Servrhe
 =======
 
-The most useless IRC bot in existance
+The most useless IRC bot in existence
+
