@@ -1023,7 +1023,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     def resolve(self, show, channel):
         matches = []
         for s in self.shows.itervalues():
-            if s["series"].lower() == show.lower():
+            if (s["series"].lower() == show.lower() or s["abbr"].lower() == show.lower()):
                 return s
             if s["series"].lower().count(show.lower()):
                 matches.append(s)
