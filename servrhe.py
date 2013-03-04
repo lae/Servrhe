@@ -524,9 +524,11 @@ class Servrhe(irc.IRCClient):
         updated = dt.utcnow() - dt.utcfromtimestamp(data["updated"])
         when = dt2ts(updated)
         if data["position"] == "completed" and data["value"] == "completed":
-            self.msg(channel, "%s is completed as of %s ago" % (show["series"], when))
+            self.msg(channel, "%s is completed as of %s ago." % (show["series"], when))
+        elif data["position"] == "DROPPED" and data["value"] == "DROPPED":
+            self.msg(channel, "%s has been dropped as of %s ago." % (show["series"], when))
         else:
-            self.msg(channel, "%s is at the %s, %s, as of %s ago" % (show["series"], data["position"], data["value"], when))
+            self.msg(channel, "%s is at the %s, %s, as of %s ago." % (show["series"], data["position"], data["value"], when))
     
     @public
     @defer.inlineCallbacks
