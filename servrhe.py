@@ -1022,6 +1022,9 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     
     def resolve(self, show, channel):
         matches = []
+        if not show:
+            self.protocols[0].msg(channel, "Show name not specified.")
+            return None
         for s in self.shows.itervalues():
             if (s["series"].lower() == show.lower() or s["abbr"].lower() == show.lower()):
                 return s
