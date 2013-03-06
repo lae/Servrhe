@@ -592,6 +592,18 @@ class Servrhe(irc.IRCClient):
         else:
             self.msg(channel, "No shows awaiting encoding")
     
+    @public
+    @defer.inlineCallbacks
+    def cmd_jp(self, user, channel, msg):
+        """.jp [show name] || .jp Accel World || Prints the Japanese title of the show"""
+        show = self.factory.resolve(" ".join(msg), channel)
+        if show is None:
+            return
+        if show["series_jp"]:
+            self.msg(channel, "%s -> %s" % (show["series"], show["series_jp"]))
+        else:
+            self.msg(channel, "%s does not have a Japanese title stored in showtimes." % show["series"])
+
     # Admin commands
     @admin
     def cmd_join(self, user, channel, msg):
