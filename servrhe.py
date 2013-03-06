@@ -593,7 +593,6 @@ class Servrhe(irc.IRCClient):
             self.msg(channel, "No shows awaiting encoding")
     
     @public
-    @defer.inlineCallbacks
     def cmd_jp(self, user, channel, msg):
         """.jp [show name] || .jp Accel World || Prints the Japanese title of the show"""
         show = self.factory.resolve(" ".join(msg), channel)
@@ -710,6 +709,18 @@ class Servrhe(irc.IRCClient):
             return
         self.msg(channel, "%s is marked as completed for the week" % show["series"])
         self.factory.update_topic()
+
+    @admin
+    @defer.inlineCallbacks
+    def cmd_lastadded(self, user, channel, msg):
+        """.lastadded || Lists the last 5 files added to new encodes"""
+        ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
+        ftp.changeDirectory("/{}/".format(self.factory.ftp_encode_dir))
+        filelist = FTPFileListProtocol()
+        yield ftp.list(".", filelist)
+        files = [(x["filename"].decode("utf-8"), time.strptime(x["date"], "%b %d %H:%M")) for x in filelist.files if x["filetype"] != "d" and re.match("\w{3} \d{2} \d{2}:\d{2}", x["date"])]
+        s_files = [s[0] for s in sorted(files, key=lambda f: f[1], reverse=True)]
+        self.msg(channel, u"The last five files added are: {}".format(", ".join(s_files[:5])))
 
     @admin
     def cmd_maketorrent(self, user, channel, msg):
@@ -1371,6 +1382,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     ftp_port = 21
     ftp_user = ""
     ftp_pass = ""
+    ftp_encode_dir = ""
     xdcc_host = ""
     xdcc_port = 21
     xdcc_user = ""
@@ -1498,6 +1510,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.ftp_port = int(config["ftp_port"]) if "ftp_port" in config else self.ftp_port
                 self.ftp_user = str(config["ftp_user"]) if "ftp_user" in config else self.ftp_user
                 self.ftp_pass = str(config["ftp_pass"]) if "ftp_pass" in config else self.ftp_pass
+                self.ftp_encode_dir = str(config["ftp_encode_dir"]) if "ftp_encode_dir" in config else self.ftp_encode_dir
                 self.xdcc_host = str(config["xdcc_host"]) if "xdcc_host" in config else self.xdcc_host
                 self.xdcc_port = int(config["xdcc_port"]) if "xdcc_port" in config else self.xdcc_port
                 self.xdcc_user = str(config["xdcc_user"]) if "xdcc_user" in config else self.xdcc_user
@@ -1538,6 +1551,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["ftp_port"] = self.ftp_port
         config["ftp_user"] = self.ftp_user
         config["ftp_pass"] = self.ftp_pass
+        config["ftp_encode_dir"] = self.ftp_encode_dir
         config["xdcc_host"] = self.xdcc_host
         config["xdcc_port"] = self.xdcc_port
         config["xdcc_user"] = self.xdcc_user
