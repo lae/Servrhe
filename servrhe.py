@@ -603,6 +603,25 @@ class Servrhe(irc.IRCClient):
         else:
             self.msg(channel, "%s does not have a Japanese title stored in showtimes." % show["series"])
 
+    @public
+    @defer.inlineCallbacks
+    def cmd_next(self, user, channel, msg):
+        """.next [show name] || .next Accel World || Reports airing ETA for a show"""
+        show = " ".join(msg)
+        if not show:
+            data = yield self.factory.load("airingnext")
+        else:
+            show = self.factory.resolve(show, channel)
+            data = yield self.factory.load("airingnext",show["id"])
+        if "status" in data and not data["status"]:
+            self.msg(channel, data["message"])
+            return
+        data = data["results"]
+        if data["eta"].startswith('-'):
+            self.msg(channel, "Episode %s of %s aired %s ago." % (data["next_ep"], data["series_jp"], data["eta"][1:]))
+        else:
+            self.msg(channel, "Episode %s of %s will air in %s." % (data["next_ep"], data["series_jp"], data["eta"]))
+
     # Admin commands
     @admin
     def cmd_join(self, user, channel, msg):
