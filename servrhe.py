@@ -612,6 +612,8 @@ class Servrhe(irc.IRCClient):
             data = yield self.factory.load("airingnext")
         else:
             show = self.factory.resolve(show, channel)
+            if show is None:
+                return
             data = yield self.factory.load("airingnext",show["id"])
         if "status" in data and not data["status"]:
             self.msg(channel, data["message"])
