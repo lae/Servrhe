@@ -619,7 +619,10 @@ class Servrhe(irc.IRCClient):
             self.msg(channel, data["message"])
             return
         data = data["results"]
-        self.msg(channel, "Episode %s of %s (%s) will air in %s." % (data["episode"], data["series"], data["series_jp"], data["when"]))
+        if data["episode"] == "finished":
+            self.msg(channel, "The last episode of %s (%s) finished airing %s ago." % (data["series"], data["series_jp"], data["when"]))
+        else:
+            self.msg(channel, "Episode %s of %s (%s) will air in %s." % (data["episode"], data["series"], data["series_jp"], data["when"]))
 
     @public
     @defer.inlineCallbacks
@@ -637,7 +640,10 @@ class Servrhe(irc.IRCClient):
             self.msg(channel, data["message"])
             return
         data = data["results"]
-        self.msg(channel, "Episode %s of %s (%s) aired %s ago." % (data["episode"], data["series"], data["series_jp"], data["when"]))
+        if data["episode"] == "unaired":
+            self.msg(channel, "The first episode of %s (%s) won't air for another %s." % (data["series"], data["series_jp"], data["when"]))
+        else:
+            self.msg(channel, "Episode %s of %s (%s) aired %s ago." % (data["episode"], data["series"], data["series_jp"], data["when"]))
 
     # Admin commands
     @admin
