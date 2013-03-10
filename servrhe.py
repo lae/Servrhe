@@ -618,9 +618,9 @@ class Servrhe(irc.IRCClient):
             return
         data = data["results"]
         if data["eta"].startswith('-'):
-            self.msg(channel, "Episode %s of %s aired %s ago." % (data["next_ep"], data["series_jp"], data["eta"][1:]))
+            self.msg(channel, "Episode %s of %s (%s) aired %s ago." % (data["next_ep"], data["series"], data["series_jp"], data["eta"][1:]))
         else:
-            self.msg(channel, "Episode %s of %s will air in %s." % (data["next_ep"], data["series_jp"], data["eta"]))
+            self.msg(channel, "Episode %s of %s (%s) will air in %s." % (data["next_ep"], data["series"], data["series_jp"], data["eta"]))
 
     # Admin commands
     @admin
