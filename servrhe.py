@@ -609,20 +609,35 @@ class Servrhe(irc.IRCClient):
         """.next [show name] || .next Accel World || Reports airing ETA for a show"""
         show = " ".join(msg)
         if not show:
-            data = yield self.factory.load("airingnext")
+            data = yield self.factory.load("airing","next")
         else:
             show = self.factory.resolve(show, channel)
             if show is None:
                 return
-            data = yield self.factory.load("airingnext",show["id"])
+            data = yield self.factory.load("airing","next",show["id"])
         if "status" in data and not data["status"]:
             self.msg(channel, data["message"])
             return
         data = data["results"]
-        if data["eta"].startswith('-'):
-            self.msg(channel, "Episode %s of %s (%s) aired %s ago." % (data["next_ep"], data["series"], data["series_jp"], data["eta"][1:]))
+        self.msg(channel, "Episode %s of %s (%s) will air in %s." % (data["episode"], data["series"], data["series_jp"], data["when"]))
+
+    @public
+    @defer.inlineCallbacks
+    def cmd_prev(self, user, channel, msg):
+        """.prev [show name] || .prev Accel World || Reports when a show last aired"""
+        show = " ".join(msg)
+        if not show:
+            data = yield self.factory.load("airing","previous")
         else:
-            self.msg(channel, "Episode %s of %s (%s) will air in %s." % (data["next_ep"], data["series"], data["series_jp"], data["eta"]))
+            show = self.factory.resolve(show, channel)
+            if show is None:
+                return
+            data = yield self.factory.load("airing","previous",show["id"])
+        if "status" in data and not data["status"]:
+            self.msg(channel, data["message"])
+            return
+        data = data["results"]
+        self.msg(channel, "Episode %s of %s (%s) aired %s ago." % (data["episode"], data["series"], data["series_jp"], data["when"]))
 
     # Admin commands
     @admin
