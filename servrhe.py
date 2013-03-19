@@ -460,9 +460,13 @@ class Servrhe(irc.IRCClient):
     def connectionLost(self, reason=None):
         self.factory.protocols.remove(self)
     
-    def privmsg(self, user, channel, msg):
-        user = user.split("!", 1)[0]
+    def privmsg(self, hostmask, channel, msg):
+        user = hostmask.split("!", 1)[0]
         channel = channel if channel != self.nickname else user
+        if user.lower() == "caex" and self.factory.caexkick: # kickban caex when they speak and are gtfo'd
+            self.mode("#commie-subs", True, "b", mask=hostmask)
+            self.kick("#commie-subs", user, "GTFO [Automated]")
+            return
         if not msg.startswith("."): # not a trigger command
             return # do nothing
         command, sep, rest = msg.lstrip(".").partition(" ")
@@ -685,6 +689,21 @@ class Servrhe(irc.IRCClient):
         self.factory.bots = [m.lower() for m in msg]
         self.msg(channel, "Bots: "+", ".join(self.factory.bots))
     
+    @admin
+    def cmd_caex(self, user, channel, msg):
+        """.caex [pls|gtfo] || .caex gtfo || Optionally kickbans CaeX whenever they speak"""
+        if msg and msg[0].lower() == "gtfo":
+            self.factory.caexkick = True
+            self.msg(channel, "CaeX will now be kickbanned upon speaking.")
+        elif msg and msg[0].lower() == "pls":
+            self.factory.caexkick = False
+            self.msg(channel, "CaeX will no longer be kickbanned upon speaking.")
+        else:
+            if self.factory.caexkick:
+                self.msg(channel, "CaeX is currently being suppressed.")
+            else:
+                self.msg(channel, "CaeX is currently not being suppressed.")
+
     @admin
     @defer.inlineCallbacks
     def cmd_refresh(self, user, channel, msg):
@@ -1457,6 +1476,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     load_url = "http://fugiman.com/commie/load.php"
     # Topic bullshit. <3 rhe
     topic = ["☭ Commie Subs ☭",20,20.56]
+    # Some people hate CaeX. A lot. Let's keep them happy
+    caexkick = False
     
     def __init__(self):
         self.shows = {}
@@ -1575,6 +1596,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.observe_dir = str(config["observe_dir"]) if "observe_dir" in config else self.observe_dir
                 self.highlights = config["highlights"] if "highlights" in config else self.highlights
                 self.topic = config["topic"] if "topic" in config else self.topic
+                self.caexkick = config["caexkick"] if "caexkick" in config else self.caexkick
         except IOError:
             pass # File doesn't exist, use defaults
         self.admins.sort()
@@ -1616,6 +1638,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["observe_dir"] = self.observe_dir
         config["highlights"] = self.highlights
         config["topic"] = self.topic
+        config["caexkick"] = self.caexkick
         data = json.dumps(config, sort_keys=True, indent=2)
         with open("servrhe.json","w") as f:
             f.write(data)
