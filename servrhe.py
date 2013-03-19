@@ -444,6 +444,7 @@ class Servrhe(irc.IRCClient):
     versionNum = "1.0"
     versionEnv = "Twisted-Python"
     sourceURL = "https://github.com/Fugiman/Servrhe"
+    lineRate = 0.400 # 400ms between messages. Because JDP tried to flood-kick the bot.
     rips = False
     bots = False
     
