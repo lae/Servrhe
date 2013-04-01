@@ -558,8 +558,11 @@ class Servrhe(irc.IRCClient):
         if show is None:
             return
         ep = int(show["current_ep"]) + 1
-        when = times[str(ep)] - dt.today()
-        self.msg(channel, "%s %d will be released in %d days" % (show["series"], ep, when.days))
+        if ep > 12:
+            self.msg(channel, "Maria fucking here! http://www.nyaa.eu/?page=view&tid=418999")
+        else:
+            when = times[str(ep)] - dt.today()
+            self.msg(channel, "%s %d will be released in %d days" % (show["series"], ep, when.days))
     
     @public
     def cmd_airing(self, user, channel, msg):
