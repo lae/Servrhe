@@ -575,6 +575,8 @@ class Servrhe(irc.IRCClient):
             if diff.days == 0:
                 shows.append((diff,show["series"]))
         shows.sort(key=lambda s: s[0])
+        if not shows:
+            self.msg(channel, "No shows airing in the next 24 hours")
         for s in shows:
             self.msg(channel, "%s airs in %s" % (s[1], dt2ts(s[0])))
     
@@ -582,16 +584,20 @@ class Servrhe(irc.IRCClient):
     @defer.inlineCallbacks
     def cmd_aired(self, user, channel, msg):
         """.aired || .aired || Lists the shows aired but not encoded"""
-        data = yield self.factory.load("shows","aired_compact")
+        dt = datetime.datetime
+        now = dt.utcnow()
+        data = yield self.factory.load("shows","aired")
         if "status" in data and not data["status"]:
             self.msg(channel, data["message"])
             return
         data = data["results"]
-        shows = ["{} {:d}".format(d["series"], d["current_ep"]+1) for d in data]
-        if shows:
-            self.msg(channel, "Waiting for encode: "+", ".join(shows))
-        else:
+        if not data:
             self.msg(channel, "No shows awaiting encoding")
+        for d in data:
+            ep = str(d["current_ep"]+1)
+            aired = dt2ts(now - dt.utcfromtimestamp(d["airtime"]))
+            request = " ({} requested) ".format(self.factory.requests[d["series"]][ep]) if d["series"] in self.factory.requests and ep in self.factory.requests[d["series"]] else ""
+            self.msg(channel, "{} {} {}aired {} ago".format(d["series"], ep, request, aired))
     
     @public
     def cmd_jp(self, user, channel, msg):
@@ -711,6 +717,36 @@ class Servrhe(irc.IRCClient):
             self.msg(channel, data["message"])
             return
         self.msg(channel, "%s for %s is assigned to %s" % (position, show["series"], victim))
+
+    @admin
+    def cmd_request(self, user, channel, msg):
+        """.request [message] [episode] [show name] || .request v2 11 tamako || Sets the request message for an episode"""
+        if len(msg) < 3:
+            self.msg(channel, "Not enough arguments")
+            return
+        message, episode, show = msg[0], msg[1], " ".join(msg[2:])
+        show = self.factory.resolve(show, channel)
+        if show is None:
+            return
+        if show["series"] not in self.factory.requests:
+            self.factory.requests[show["series"]] = {}
+        self.factory.requests[show["series"]][episode] = message
+        self.msg(channel, "Request for {} {} set to {}".format(show["series"], episode, message))
+
+    @admin
+    def cmd_unrequest(self, user, channel, msg):
+        """.unrequest [episode] [show name] || .unrequest 11 tamako || Removes the request message for an episode"""
+        if len(msg) < 2:
+            self.msg(channel, "Not enough arguments")
+            return
+        episode, show = msg[0], " ".join(msg[1:])
+        show = self.factory.resolve(show, channel)
+        if show is None:
+            return
+        if show["series"] not in self.factory.requests:
+            self.factory.requests[show["series"]] = {}
+        del self.factory.requests[show["series"]][episode]
+        self.msg(channel, "Request for {} {} removed".format(show["series"], episode))
     
     @admin
     @defer.inlineCallbacks
@@ -1416,6 +1452,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     admins = ["rhexcelion","fugiman"]
     bots = ["arutha","cerebrate","[h-subs]rei","vesperia"]
     releases = []
+    requests = {}
     # Ripper config
     dcc_destdir = "C:/"
     ass_destdir = "C:/"
@@ -1546,6 +1583,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.admins = [str(a) for a in config["admins"]] if "admins" in config else self.admins
                 self.bots = [str(b) for b in config["bots"]] if "bots" in config else self.bots
                 self.releases = [str(b) for b in config["releases"]] if "releases" in config else self.releases
+                self.requests = config["requests"] if "requests" in config else self.requests
                 self.dcc_destdir = str(config["dcc_destdir"]) if "dcc_destdir" in config else self.dcc_destdir
                 self.ass_destdir = str(config["ass_destdir"]) if "ass_destdir" in config else self.ass_destdir
                 self.ftp_location = str(config["ftp_location"]) if "ftp_location" in config else self.ftp_location
@@ -1587,6 +1625,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["admins"] = self.admins
         config["bots"] = self.bots
         config["releases"] = self.releases
+        config["requests"] = self.requests
         config["dcc_destdir"] = self.dcc_destdir
         config["ass_destdir"] = self.ass_destdir
         config["ftp_location"] = self.ftp_location
