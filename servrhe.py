@@ -576,12 +576,12 @@ class Servrhe(irc.IRCClient):
                 continue
             diff = dt.utcfromtimestamp(show["airtime"]) - now
             if diff.days == 0:
-                shows.append((diff,show["series"]))
+                shows.append((diff,show["series"],show["channel"]))
         shows.sort(key=lambda s: s[0])
         if not shows:
             self.msg(channel, "No shows airing in the next 24 hours")
         for s in shows:
-            self.msg(channel, "%s airs in %s" % (s[1], dt2ts(s[0])))
+            self.msg(channel, "%s airs in %s on %s" % (s[1], dt2ts(s[0]), s[2]))
     
     @public
     @defer.inlineCallbacks
@@ -600,7 +600,7 @@ class Servrhe(irc.IRCClient):
             ep = str(d["current_ep"]+1)
             aired = dt2ts(now - dt.utcfromtimestamp(d["airtime"]))
             request = " ({} requested) ".format(self.factory.requests[d["series"]][ep]) if d["series"] in self.factory.requests and ep in self.factory.requests[d["series"]] else ""
-            self.msg(channel, "{} {} {}aired {} ago".format(d["series"], ep, request, aired))
+            self.msg(channel, "{} {} {}aired {} ago on {}".format(d["series"], ep, request, aired, d["channel"]))
     
     @public
     def cmd_jp(self, user, channel, msg):
