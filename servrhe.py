@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 LOCAL = False
@@ -43,12 +43,15 @@ from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
 from twisted.web.iweb import IBodyProducer
 from twisted.web.client import Agent, FileBodyProducer
 from twisted.web.http_headers import Headers
+from twisted.web.xmlrpc import Proxy
 from zope.interface import implements
 from StringIO import StringIO
 from functools import wraps
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
-import re, urllib, json, os, inspect, datetime, fnmatch, ctypes, sys, binascii, time, hashlib, mimetypes, cookielib
+from xml.etree import ElementTree
+from subparser import *
+import re, urllib, json, os, inspect, datetime, fnmatch, ctypes, sys, binascii, time, hashlib, mimetypes, cookielib, uuid, shutil, base64, HTMLParser
 
 logs = []
 def log(*params):
@@ -104,10 +107,6 @@ def bytes2human(num):
             return "%3.1f%s" % (num, x)
         num /= 1024.0
     return "%3.1f%s" % (num, 'TB')
-
-def search(pattern, files):
-    file = fnmatch.filter(files, pattern)
-    return file[0] if file else None
 
 class BodyStringifier(protocol.Protocol):
     def __init__(self, deferred):
@@ -183,7 +182,7 @@ def bencode(x):
     r.extend(bencode_func[type(x)](x))
     return ''.join(r)
 
-def makeTorrent(fname):
+def makeTorrent(fname, folder = "."):
     data = {
         "announce": "http://open.nyaatorrents.info:6544/announce",
         "announce-list": [["http://open.nyaatorrents.info:6544/announce"],["udp://tracker.openbittorrent.com:80/announce"]],
@@ -198,7 +197,7 @@ def makeTorrent(fname):
     # 1MB pieces if file > 512MB, else 512KB pieces
     data["info"]["piece length"] = piece_length = 2**20 if size > 512*1024*1024 else 2**19
     pieces = []
-    with open(fname, "rb") as f:
+    with open("{}/{}".format(folder, fname), "rb") as f:
         p = 0L
         while p < size:
             chunk = f.read(min(piece_length, size - p))
@@ -360,7 +359,6 @@ class MultiPartProducer:
     def _boundary(self):
         boundary = None
         try:
-            import uuid
             boundary = uuid.uuid4().hex
         except ImportError:
             import random, sha
@@ -380,6 +378,52 @@ class MultiPartProducer:
             size = 0
         self._file_lengths[field] = size
         return self._file_lengths[field]
+
+class ChapterMaker(object):
+    def __init__(self):
+        self.chapters = {}
+        self.uid_diff = 1000000000
+        self.uid_begin = 0
+    def add(self, chapters):
+        chapters.update(self.chapters)
+        self.chapters = chapters
+    def update(self, chapters):
+        self.chapters.update(chapters)
+    def get_uid(self):
+        uid = str(random.randrange(self.uid_begin, self.uid_begin + self.uid_diff))
+        self.uid_begin += self.uid_diff
+        return uid
+    def make_chapter(self, name, time):
+        lines = []
+        lines.append("    <ChapterAtom>")
+        lines.append("      <ChapterUID>%s</ChapterUID>" % self.get_uid())
+        lines.append("      <ChapterFlagHidden>0</ChapterFlagHidden>")
+        lines.append("      <ChapterFlagEnabled>1</ChapterFlagEnabled>")
+        lines.append("      <ChapterTimeStart>%s</ChapterTimeStart>" % intToTime(time))
+        lines.append("      <ChapterDisplay>")
+        lines.append("        <ChapterString>%s</ChapterString>" % name)
+        lines.append("        <ChapterLanguage>eng</ChapterLanguage>")
+        lines.append("      </ChapterDisplay>")
+        lines.append("    </ChapterAtom>")
+        return lines
+    def __str__(self):
+        chapters = sorted(self.chapters.items(), key=lambda x: x[1])
+        lines = []
+        lines.append("<?xml version='1.0' encoding='UTF-8'?>")
+        lines.append("")
+        lines.append("<!-- <!DOCTYPE Tags SYSTEM \"matroskatags.dtd\"> -->")
+        lines.append("")
+        lines.append("<Chapters>")
+        lines.append("  <EditionEntry>")
+        lines.append("    <EditionFlagHidden>0</EditionFlagHidden>")
+        lines.append("    <EditionFlagDefault>0</EditionFlagDefault>")
+        lines.append("    <EditionUID>%s</EditionUID>" % self.get_uid())
+        for name, time in chapters:
+            lines.extend(self.make_chapter(name, time))
+        lines.append("  </EditionEntry>")
+        lines.append("</Chapters>")
+        return "\n".join(lines)
+
 
 class ServrheDownloader(protocol.Protocol):
     def __init__(self, name):
@@ -771,6 +815,39 @@ class Servrhe(irc.IRCClient):
             self.msg(channel, data["message"])
             return
         self.msg(channel, "%s for %s is marked as %s" % (position, show["series"], "done" if done else "not done"))
+        if position == "encoder":
+            if not show["folder"]:
+                self.msg(channel, "No FTP folder given for {}, aborting auto-cache.".format(show["series"]))
+                return
+            name_filter = "premux"
+            episode = show["current_ep"] + 1
+
+            ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
+            ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
+            filelist = FTPFileListProtocol()
+            yield ftp.list(".", filelist)
+            files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
+            premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
+
+            if not premux:
+                self.msg(channel, "No premux found, aborting auto-cache")
+                return
+            elif len(premux) > 1:
+                self.msg(channel, "Too many premux files match the filter: {}. (Aborting auto-cache)".format(", ".join(premux)))
+                return
+            else:
+                premux = premux[0]
+            premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+
+            success = yield self._cache(user, ftp, premux, premux_len)
+
+            if success:
+                self.msg(channel, "{} auto-cached.".format(premux))
+            else:
+                self.msg(channel, "Auto-caching of {} failed.".format(premux))
+
+            yield ftp.quit()
+            ftp.fail(None)
     
     @admin
     def cmd_undone(self, user, channel, msg):
@@ -805,19 +882,333 @@ class Servrhe(irc.IRCClient):
         self.msg(channel, u"The last five files added are: {}".format(", ".join(s_files[:5])))
 
     @admin
-    def cmd_maketorrent(self, user, channel, msg):
-        complete = search("[[]Commie[]]*.mkv", [f for f in os.listdir('.') if os.path.isfile(f)])
-        if complete:
-            torrent = makeTorrent(complete)
-            self.msg(channel, "Torrent for '{}' created as '{}'".format(complete, torrent))
+    @defer.inlineCallbacks
+    def cmd_cache(self, user, channel, msg):
+        """.cache [filter] [showname] || .cache premux eotena || Caches the premux for a show so that .chapters, .xdelta and .release work faster"""
+        if len(msg) < 2:
+            self.msg(channel, "Need a filter and show name")
+            return
+        name_filter, show = msg[0], " ".join(msg[1:])
+        show = self.factory.resolve(show, channel)
+        if show is None:
+            return
+        if not show["folder"]:
+            self.msg(channel, "No FTP folder given for {}".format(show["series"]))
+            return
+        episode = show["current_ep"] + 1
+
+        ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
+        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
+        filelist = FTPFileListProtocol()
+        yield ftp.list(".", filelist)
+        files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
+        premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
+
+        if not premux:
+            self.msg(channel, "No premux found")
+            return
+        elif len(premux) > 1:
+            self.msg(channel, "Too many premux files match the filter: {}".format(", ".join(premux)))
+            return
         else:
-            self.msg(channel, "Couldn't find episode to make torrent for")
+            premux = premux[0]
+        premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+
+        success = yield self._cache(user, ftp, premux, premux_len)
+
+        if success:
+            self.msg(channel, "{} cached.".format(premux))
+        else:
+            self.msg(channel, "Caching of {} failed.".format(premux))
+
+        yield ftp.quit()
+        ftp.fail(None)
+
+    @defer.inlineCallbacks
+    def _cache(self, user, ftp, premux, premux_len):
+        self.notice(user, "Beginning caching of {}".format(premux))
+        premux_downloader = ServrheDownloader("{}/{}".format(self.factory.premux_dir, premux))
+        yield ftp.retrieveFile(premux, premux_downloader)
+
+        if premux_downloader.done() != premux_len:
+            os.remove("{}/{}".format(self.factory.premux_dir, premux))
+            defer.returnValue(False)
+        else:
+            defer.returnValue(True)
+        
+    @admin
+    @defer.inlineCallbacks
+    def cmd_chapters(self, user, channel, msg):
+        """.chapters [filter] [show name] || .chapters premux eotena || Creates chapters for the premux and ass matching the filter for the show"""
+        if len(msg) < 2:
+            self.msg(channel, "Need a filter and show name")
+            return
+        name_filter, show = msg[0], " ".join(msg[1:])
+
+        show = self.factory.resolve(show, channel)
+        if show is None:
+            return
+        if not show["folder"]:
+            self.msg(channel, "No FTP folder given for {}".format(show["series"]))
+            return
+        episode = show["current_ep"] + 1
+        guid = uuid.uuid4().hex
+        while os.path.exists(guid):
+            guid = uuid.uuid4().hex
+        os.mkdir(guid)
+
+        # Step 1: Search FTP for premux + script
+        ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
+        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
+        filelist = FTPFileListProtocol()
+        yield ftp.list(".", filelist)
+        files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
+        premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
+        script = fnmatch.filter(files, "*{}*.ass".format(name_filter))
+
+        if not premux:
+            self.msg(channel, "No premux found")
+            return
+        elif len(premux) > 1:
+            self.msg(channel, "Too many premux files match the filter: {}".format(", ".join(premux)))
+            return
+        else:
+            premux = premux[0]
+        if not script:
+            self.msg(channel, "No script found")
+            return
+        elif len(script) > 1:
+            self.msg(channel, "Too many script files match the filter: {}".format(", ".join(script)))
+            return
+        else:
+            script = script[0]
+
+        # Step 2: Download that shit
+        if not os.path.isfile("{}/{}".format(self.factory.premux_dir, premux)):
+            premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+            success = yield self._cache(user, ftp, premux, premux_len)
+            if not success:
+                self.msg(channel, "Aborted creating xdelta for {}: Download of premux file had incorrect size.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+        shutil.copyfile("{}/{}".format(self.factory.premux_dir, premux), "{}/{}".format(guid, premux))
+        script_len = [x["size"] for x in filelist.files if x["filename"] == script][0]
+        script_downloader = ServrheDownloader("{}/{}".format(guid, script))
+        yield ftp.retrieveFile(script, script_downloader)
+        if script_downloader.done() != script_len:
+            self.msg(channel, "Aborted creating xdelta for {}: Download of script file had incorrect size.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+
+        # Step 3: Make the damn chapters
+        subs = SubParser("{}/{}".format(guid, script))
+        chapters = ChapterMaker()
+
+        try:
+            data = utils.getProcessOutput(getPath("mkvextract"), args=["chapters","{}/{}".format(guid, premux)], env=os.environ)
+        except:
+            self.notice(user, "Failed to load chapters from video file.")
+        if data:
+            tree = ElementTree.fromstring(data)
+            for chapter in tree.iter("ChapterAtom"):
+                title = chapter.find("ChapterDisplay").find("ChapterString").text
+                time = timeToInt(chapter.find("ChapterTimeStart").text)
+                chapters.add({title: time})
+        
+        new_chapters = {"Intro": 33}
+        for keyword in subs.keywords:
+            word = keyword["keyword"].lower()
+            if word == "op":
+                new_chapters["OP"] = keyword["time"]
+                new_chapters["Part A"] = keyword["time"] + 90000
+            elif word == "ed":
+                new_chapters["ED"] = keyword["time"]
+            elif word == "part a":
+                new_chapters["Part A"] = keyword["time"]
+            elif word == "eyecatch" or word == "part b":
+                new_chapters["Part B"] = keyword["time"]
+            elif word == "preview":
+                new_chapters["Preview"] = keyword["time"]
+        chapters.add(new_chapters)
+        if "OP" in chapters.chapters and chapters.chapters["OP"] <= chapters.chapters["Intro"]:
+            del chapters.chapters["Intro"]
+
+        # Step 4: Upload
+        store, finish = ftp.storeFile("{}".format(script.replace(".ass", ".xml")))
+        sender = yield store
+        sender.transport.write(str(chapters))
+        sender.finish()
+        yield finish
+        self.msg(channel, "Chapters for {} uploaded".format(show["series"]))
+
+        # Step 5: Clean up
+        yield ftp.quit()
+        ftp.fail(None)
+        shutil.rmtree(guid, True)
+
+    @admin
+    @defer.inlineCallbacks
+    def cmd_xdelta(self, user, channel, msg):
+        """.xdelta [filter] [show name] || .xdelta premux eotena || Creates an xdelta for the premux and ass matching the filter for the show"""
+        if len(msg) < 2:
+            self.msg(channel, "Need a filter and show name")
+            return
+        name_filter, show, fname = msg[0], " ".join(msg[1:]), "test.mkv"
+
+        show = self.factory.resolve(show, channel)
+        if show is None:
+            return
+        if not show["folder"]:
+            self.msg(channel, "No FTP folder given for {}".format(show["series"]))
+            return
+        episode = show["current_ep"] + 1
+        guid = uuid.uuid4().hex
+        while os.path.exists(guid):
+            guid = uuid.uuid4().hex
+        os.mkdir(guid)
+
+        # Step 1: Search FTP for premux + script
+        ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
+        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
+        filelist = FTPFileListProtocol()
+        yield ftp.list(".", filelist)
+        files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
+        premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
+        script = fnmatch.filter(files, "*{}*.ass".format(name_filter))
+        chapters = fnmatch.filter(files, "*{}*.xml".format(name_filter))
+
+        if not premux:
+            self.msg(channel, "No premux found")
+            return
+        elif len(premux) > 1:
+            self.msg(channel, "Too many premux files match the filter: {}".format(", ".join(premux)))
+            return
+        else:
+            premux = premux[0]
+        if not script:
+            self.msg(channel, "No script found")
+            return
+        elif len(script) > 1:
+            self.msg(channel, "Too many script files match the filter: {}".format(", ".join(script)))
+            return
+        else:
+            script = script[0]
+        if not chapters:
+            self.msg(channel, "No chapters found")
+            return
+        elif len(chapters) > 1:
+            self.msg(channel, "Too many chapter files match the filter: {}".format(", ".join(chapters)))
+            return
+        else:
+            chapters = chapters[0]
+
+        # Step 2: Download that shit
+        if not os.path.isfile("{}/{}".format(self.factory.premux_dir, premux)):
+            premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+            success = yield self._cache(user, ftp, premux, premux_len)
+            if not success:
+                self.msg(channel, "Aborted creating xdelta for {}: Download of premux file had incorrect size.".format(show["series"]))
+                yield ftp.quit()
+                ftp.fail(None)
+                return
+        shutil.copyfile("{}/{}".format(self.factory.premux_dir, premux), "{}/{}".format(guid, premux))
+        script_len = [x["size"] for x in filelist.files if x["filename"] == script][0]
+        script_downloader = ServrheDownloader("{}/{}".format(guid, script))
+        yield ftp.retrieveFile(script, script_downloader)
+        if script_downloader.done() != script_len:
+            self.msg(channel, "Aborted creating xdelta for {}: Download of script file had incorrect size.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        chapters_len = [x["size"] for x in filelist.files if x["filename"] == chapters][0]
+        chapters_downloader = ServrheDownloader("{}/{}".format(guid, chapters))
+        yield ftp.retrieveFile(chapters, chapters_downloader)
+        if chapters_downloader.done() != chapters_len:
+            self.msg(channel, "Aborted creating xdelta for {}: Download of chapter file had incorrect size.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        self.notice(user, "Found premux, script and chapters: {}, {} and {}".format(premux, script, chapters))
+
+        # Step 3: Download fonts
+        filelist = FTPFileListProtocol()
+        yield ftp.list("fonts", filelist)
+        files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
+        fonts = []
+        for font in files:
+            font_len = [x["size"] for x in filelist.files if x["filename"] == font][0]
+            font_downloader = ServrheDownloader("{}/{}".format(guid, font))
+            yield ftp.retrieveFile("fonts/{}".format(font), font_downloader)
+            if font_downloader.done() != font_len:
+                self.notice(user, "Failed to download font: {}. Proceeding without it.".format(font))
+            else:
+                fonts.append(font)
+        self.notice(user, "Fonts downloaded. ({})".format(", ".join(fonts)))
+
+        # Step 4: MKVMerge
+        arguments = ["-o", "{}/{}".format(guid, fname), "--no-chapters", "--chapters", "{}/{}".format(guid, chapters)]
+        for font in fonts:
+            arguments.extend(["--attachment-mime-type", "application/x-truetype-font", "--attach-file", "{}/{}".format(guid, font)])
+        arguments.extend(["{}/{}".format(guid, premux), "{}/{}".format(guid, script)])
+        code = yield utils.getProcessValue(getPath("mkvmerge"), args=arguments, env=os.environ)
+        if code != 0:
+            self.msg(channel, "Aborted creating xdelta for {}: Couldn't merge premux and script.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        self.notice(user, "Merged premux and script")
+
+        # Step 5: Determine filename
+        match = re.search("(v\d+).ass", script)
+        version = match.group(1) if match is not None else ""
+        try:
+            with open("{}/{}".format(guid, fname), "rb") as f:
+                crc = "{:08X}".format(binascii.crc32(f.read()) & 0xFFFFFFFF)
+        except:
+            self.msg(channel, "Aborted creating xdelta for {}: Couldn't open completed file for CRC verification.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        nfname = "[Commie] {} - {:02d}{} [{}].mkv".format(show["series"], episode, version, crc)
+        os.rename("{}/{}".format(guid, fname), "{}/{}".format(guid, nfname))
+        fname = nfname
+        self.notice(user, "Determined final filename to be {}".format(fname))
+
+        # Step 5: Make that xdelta
+        xdelta = script.replace(".ass",".xdelta")
+        code = yield utils.getProcessValue(getPath("xdelta3"), args=["-f","-e","-s","{}/{}".format(guid, premux),"{}/{}".format(guid, fname),"{}/{}".format(guid, xdelta)], env=os.environ)
+        if code != 0:
+            self.msg(channel, "Aborted creating xdelta for {}: Couldn't create xdelta.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        self.notice(user, "Made xdelta")
+
+        # Step 6: Upload that xdelta
+        store, finish = ftp.storeFile("{}".format(xdelta))
+        sender = yield store
+        with open("{}/{}".format(guid, xdelta), "rb") as f:
+            sender.transport.write(f.read())
+        sender.finish()
+        yield finish
+        self.msg(channel, "xdelta for {} uploaded".format(show["series"]))
+
+        # Step 7: Clean up
+        yield ftp.quit()
+        ftp.fail(None)
+        shutil.rmtree(guid, True)
 
     @admin
     @defer.inlineCallbacks
     def cmd_release(self, user, channel, msg):
-        """.release [show name] || .release Accel World || Release the show"""
-        show = self.factory.resolve(" ".join(msg), channel)
+        """.release [filter] [show name] || .release premux Accel World || Release the show where the FTP file contains the filter"""
+        if len(msg) < 2:
+            self.msg(channel, "Need a filter and a showname")
+            return
+        name_filter = msg[0]
+        show = self.factory.resolve(" ".join(msg[1:]), channel)
         if show is None:
             return
         if not show["folder"]:
@@ -826,61 +1217,92 @@ class Servrhe(irc.IRCClient):
         if not show["xdcc_folder"]:
             self.msg(channel, "No XDCC folder given for {}".format(show["series"]))
             return
+        episode = show["current_ep"] + 1
+        guid = uuid.uuid4().hex
+        while os.path.exists(guid):
+            guid = uuid.uuid4().hex
+        os.mkdir(guid)
+        self.msg(channel, "Fugiman: {} has initiated a release for {} {:d}. UUID is {}. Thought you ought to know.".format(user, show["series"], episode, guid))
 
         # Step 1: Search FTP for complete episode, or premux + xdelta
         ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.ftp_user, self.factory.ftp_pass).connectTCP(self.factory.ftp_host, self.factory.ftp_port)
-        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], show["current_ep"] + 0))
+        ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
         filelist = FTPFileListProtocol()
         yield ftp.list(".", filelist)
         files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
-        xdelta = search("*.xdelta", files)
-        premux = search("*_premux.mkv", files)
-        complete = search("[[]Commie[]]*.mkv", files)
+        complete = fnmatch.filter(files, "[[]Commie[]]*{}*.mkv".format(name_filter))
+        xdelta = fnmatch.filter(files, "*{}*.xdelta".format(name_filter))
+        premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
+
         if complete:
             # Step 1a: Download completed file
+            if len(complete) > 1:
+                self.msg(channel, "Too many completed files match the filter: {}".format(", ".join(complete)))
+                return
+            else:
+                complete = complete[0]
             self.notice(user, "Found complete file: {}".format(complete))
             complete_len = [x["size"] for x in filelist.files if x["filename"] == complete][0]
-            complete_downloader = ServrheDownloader(complete)
+            complete_downloader = ServrheDownloader("{}/{}".format(guid, complete))
             yield ftp.retrieveFile(complete, complete_downloader)
             if complete_downloader.done() != complete_len:
                 self.msg(channel, "Aborted releasing {}: Download of complete file had incorrect size.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
+
         elif xdelta and premux:
             # Step 1b: Download premux + xdelta, merge into completed file
-            self.notice(user, "Found xdelta and premux: {} and {}".format(xdelta, premux))
-            premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
-            premux_downloader = ServrheDownloader(premux)
-            yield ftp.retrieveFile(premux, premux_downloader)
-            if premux_downloader.done() != premux_len:
-                self.msg(channel, "Aborted releasing {}: Download of premux file had incorrect size.".format(show["series"]))
-                yield ftp.quit()
-                ftp.fail(None)
+            if len(premux) > 1:
+                self.msg(channel, "Too many premux files match the filter: {}".format(", ".join(premux)))
                 return
+            else:
+                premux = premux[0]
+            if len(xdelta) > 1:
+                self.msg(channel, "Too many xdelta files match the filter: {}".format(", ".join(xdelta)))
+                return
+            else:
+                xdelta = xdelta[0]
+            self.notice(user, "Found xdelta and premux: {} and {}".format(xdelta, premux))
+
+            if not os.path.isfile("{}/{}".format(self.factory.premux_dir, premux)):
+                premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+                success = yield self._cache(user, ftp, premux, premux_len)
+                if not success:
+                    self.msg(channel, "Aborted releasing {}: Download of premux file had incorrect size.".format(show["series"]))
+                    yield ftp.quit()
+                    ftp.fail(None)
+                    return
+            shutil.copyfile("{}/{}".format(self.factory.premux_dir, premux), "{}/{}".format(guid, premux))
             xdelta_len = [x["size"] for x in filelist.files if x["filename"] == xdelta][0]
-            xdelta_downloader = ServrheDownloader(xdelta)
+            xdelta_downloader = ServrheDownloader("{}/{}".format(guid, xdelta))
             yield ftp.retrieveFile(xdelta, xdelta_downloader)
             if xdelta_downloader.done() != xdelta_len:
                 self.msg(channel, "Aborted releasing {}: Download of xdelta file had incorrect size.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
-            code = yield utils.getProcessValue(getPath("xdelta3"), args=["-f","-d",xdelta], env=os.environ)
+            code = yield utils.getProcessValue(getPath("xdelta3"), args=["-f","-d","{}/{}".format(guid, xdelta)], env=os.environ)
             if code != 0:
                 self.msg(channel, "Aborted releasing {}: Couldn't merge premux and xdelta.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
-            complete = search("[[]Commie[]]*.mkv", os.listdir("."))
+            self.notice(user, "Merged premux and xdelta")
+            complete = fnmatch.filter(os.listdir(guid), "[[]Commie[]]*.mkv")
+            if not complete:
+                self.msg(channel, "No completed file found")
+                return
+            elif len(complete) > 1:
+                self.msg(channel, "Too many completed files found after merging: {}".format(", ".join(complete)))
+                return
+            else:
+                complete = complete[0]
             if not complete:
                 self.msg(channel, "Aborted releasing {}: Couldn't find completed file after merging.".format(show["series"]))
                 yield ftp.quit()
                 ftp.fail(None)
                 return
-            os.remove(xdelta)
-            os.remove(premux)
-            self.notice(user, "Merged premux and xdelta")
         else:
             self.msg(channel, "Aborted releasing {}: Couldn't find completed episode.".format(show["series"]))
             yield ftp.quit()
@@ -891,38 +1313,34 @@ class Servrhe(irc.IRCClient):
         # Step 1c: Verify CRC
         crc = complete[-13:-5] # Extract CRC from filename
         try:
-            with open(complete,"rb") as f:
+            with open("{}/{}".format(guid, complete), "rb") as f:
                 calc = "{:08X}".format(binascii.crc32(f.read()) & 0xFFFFFFFF)
         except:
             self.msg(channel, "Aborted releasing {}: Couldn't open completed file for CRC verification.".format(show["series"]))
             return
         if crc != calc:
             self.msg(channel, "Aborted releasing {}: CRC failed verification. Filename = '{}', Calculated = '{}'.".format(show["series"], crc, calc))
-            os.remove(complete)
             return
 
         # Step 2: Create torrent
         try:
-            torrent = makeTorrent(complete)
+            torrent = makeTorrent(complete, guid)
         except Exception, e:
             self.msg(channel, "Aborted releasing {}: Couldn't create torrent.".format(show["series"]))
-            os.remove(complete)
             return
         self.notice(user, "Created torrent")
 
         # Step 3: Upload episode to XDCC server
         try:
             ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.xdcc_user, self.factory.xdcc_pass).connectTCP(self.factory.xdcc_host, self.factory.xdcc_port)
-            store, finish = ftp.storeFile("./{}/{}".format(show["xdcc_folder"],complete))
+            store, finish = ftp.storeFile("./{}/{}/{}".format(self.factory.xdcc_folder, show["xdcc_folder"], complete))
             sender = yield store
-            with open(complete,"rb") as f:
+            with open("{}/{}".format(guid, complete), "rb") as f:
                 sender.transport.write(f.read())
             sender.finish()
             yield finish
         except:
             self.msg(channel, "Aborted releasing {}: Couldn't upload completed episode to XDCC server.".format(show["series"]))
-            os.remove(complete)
-            os.remove(torrent)
             return
         self.notice(user, "Uploaded to XDCC")
 
@@ -931,14 +1349,12 @@ class Servrhe(irc.IRCClient):
             ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.seed_user, self.factory.seed_pass).connectTCP(self.factory.seed_host, self.factory.seed_port)
             store, finish = ftp.storeFile("./{}/{}".format(self.factory.seed_file_folder, complete))
             sender = yield store
-            with open(complete,"rb") as f:
+            with open("{}/{}".format(guid, complete), "rb") as f:
                 sender.transport.write(f.read())
             sender.finish()
             yield finish
         except:
             self.msg(channel, "Aborted releasing {}: Couldn't upload completed episode to seedbox.".format(show["series"]))
-            os.remove(complete)
-            os.remove(torrent)
             return
         self.notice(user, "Uploaded to seedbox")
 
@@ -950,12 +1366,10 @@ class Servrhe(irc.IRCClient):
         body = yield returnBody(response)
         if "Login successful" not in body:
             self.msg(channel, "Aborted releasing {}: Couldn't login to Nyaa.".format(show["series"]))
-            os.remove(complete)
-            os.remove(torrent)
             return
         response = yield nyaagent.request("POST","http://www.nyaa.eu/?page=upload",
             Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
-            MultiPartProducer({"torrent": torrent},{
+            MultiPartProducer({"torrent": "{}/{}".format(guid, torrent)},{
                 "name": complete,
                 "catid": "1_37",
                 "info": "#commie-subs@irc.rizon.net",
@@ -976,21 +1390,17 @@ class Servrhe(irc.IRCClient):
                 520: "Configuration Broken"
             }
             self.msg(channel, "Aborted releasing {}: Couldn't upload torrent to Nyaa. Error #{:d}: {}".format(show["series"], response.code, nyaa_codes[response.code]))
-            os.remove(complete)
-            os.remove(torrent)
             return
         self.notice(user, "Uploaded to Nyaa")
 
         # Step 6: Get torrent link from Nyaa
         body = yield returnBody(response)
-        match = re.search("http://www.nyaa.eu/\?page=torrentinfo&#38;tid=[0-9]+", body)
+        match = re.search("http://www.nyaa.eu/\?page=view&#38;tid=[0-9]+", body)
         if not match:
             self.msg(channel, "Aborted releasing {}: Couldn't find torrent link in Nyaa's response.".format(show["series"]))
-            os.remove(complete)
-            os.remove(torrent)
             return
         info_link = match.group(0).replace("&#38;","&")
-        download_link = info_link.replace("torrentinfo","download")
+        download_link = info_link.replace("view","download")
         self.notice(user, "Got Nyaa torrent link")
 
         # Step 7: Upload torrent link to TT
@@ -1011,31 +1421,36 @@ class Servrhe(irc.IRCClient):
                     "website": "http://www.commiesubs.com/",
                 }))))
             body = yield returnBody(response)
-            if "Login successful" not in body: ## TODO: What is text that is guarenteed to show up in this page??
+            if "Torrent Submitted" not in body:
                 self.msg(channel, "Couldn't upload torrent to TT. Continuing to release {} regardless.".format(show["series"]))
             else:
                 self.notice(user, "Uploaded to TT")
 
         # Step 8: Create blog post
-        blogagent = CookieAgent(Agent(reactor), cookielib.CookieJar())
-        response = yield blogagent.request("POST","http://commiesubs.com/wp-login.php",
-            Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
-            FileBodyProducer(StringIO(urllib.urlencode({
-                "log": self.factory.blog_user,
-                "pwd": self.factory.blog_pass,
-                "wp-submit": "Log In",
-                "redirect_to": "http://commiesubs.com/wp-admin/",
-                "testcookie": 1,
-            }))))
-        self.msg(channel, "Couldn't create blog post. Continuing to release {} regardless.".format(show["series"]))
-        self.notice(user, "Created blog post")
+        blog = Proxy("http://commiesubs.com/xmlrpc.php")
+        try:
+            yield blog.callRemote("wp.newPost",
+                0, # Blog ID
+                self.factory.blog_user, # Username
+                self.factory.blog_pass, # Password
+                { # Content
+                    "post_type": "post",
+                    "post_status": "published",
+                    "post_title": show["series"] + " " + episode,
+                    "post_content": "<a href=\"{}\">Torrent</a>".format(info_link),
+                    "terms_names": {"category": ["The Bread Lines", show["blog_link"].split("/")[-2].replace("-"," ")]}
+                }
+            )
+            self.notice(user, "Created blog post")
+        except:
+            self.msg(channel, "Couldn't create blog post. Continuing to release {} regardless.".format(show["series"]))
 
         # Step 9: Start seeding torrent
         try:
             ftp = yield protocol.ClientCreator(reactor, FTPClient, self.factory.seed_user, self.factory.seed_pass).connectTCP(self.factory.seed_host, self.factory.seed_port)
             store, finish = ftp.storeFile("./{}/{}".format(self.factory.seed_torrent_folder, torrent))
             sender = yield store
-            with open(torrent,"rb") as f:
+            with open("{}/{}".format(guid, torrent), "rb") as f:
                 sender.transport.write(f.read())
             sender.finish()
             yield finish
@@ -1047,8 +1462,6 @@ class Servrhe(irc.IRCClient):
         data = yield self.factory.load("show","update", data={"id":show["id"],"method":"next_episode"})
         if "status" in data and not data["status"]:
             self.msg(channel, data["message"])
-            os.remove(complete)
-            os.remove(torrent)
             return
         self.msg(channel, "%s is marked as completed for the week" % show["series"])
 
@@ -1056,8 +1469,7 @@ class Servrhe(irc.IRCClient):
         self.factory.update_topic()
 
         # Step 12: Clean up
-        os.remove(complete)
-        os.remove(torrent)
+        shutil.rmtree(guid, True)
     
     @admin
     @defer.inlineCallbacks
@@ -1094,6 +1506,70 @@ class Servrhe(irc.IRCClient):
         self.factory.releases = []
         self.msg(channel, message)
     
+    @admin
+    def cmd_notify(self, user, channel, msg):
+        """.notify [# of weeks|forever|clear] [show name|*] || .notify forever * || Adds you to the notify list for a show."""
+        if len(msg) < 2:
+            return self.msg(channel, "Duration and name required")
+        duration, name = msg[0], " ".join(msg[1:])
+        if name != "*":
+            show = self.factory.resolve(id, channel)
+            if not show:
+                return
+            id = show["id"]
+            name = show["series"]
+        else:
+            id = "*"
+        if duration == "forever":
+            duration = -1
+        elif duration == "clear":
+            duration = 0
+        else:
+            try:
+                duration = int(duration)
+            except:
+                return self.msg(channel, "Failed to convert duration to an integer")
+        if id not in self.factory.notifies:
+            self.factory.notifies[id] = {}
+        if duration:
+            self.factory.notifies[id][user] = duration
+            extra = ""
+            if id != "*":
+                show = self.factory.shows[id]
+                dt = datetime.datetime
+                now = dt.utcnow()
+                diff = dt.utcfromtimestamp(show["airtime"]) - now
+                extra = " (airs in {} on {})".format(dt2ts(diff), show["channel"])
+            self.msg(channel, "You'll now be notified for {}{}".format(name, extra))
+        elif user in self.factory.notifies[id]:
+            del self.factory.notifies[id][user]
+            self.msg(channel, "You are now no longer being notified for {}".format(name))
+        else:
+            self.msg(channel, "You already weren't being notified for {}".format(name))
+
+    @admin
+    @defer.inlineCallbacks
+    def cmd_plotsummary(self, user, channel, msg):
+        """.plotsummary [show name] || .plotsummary eotena || Gives a summary of the show, taken from MAL"""
+        show = self.factory.resolve(" ".join(msg), channel)
+        if not show:
+            return
+        creds = "{}:{}".format(self.factory.mal_user, self.factory.mal_pass)
+        auth = "Basic {}".format(base64.b64encode(creds))
+        data = yield fetchPage("http://myanimelist.net/api/anime/search.xml?q={}".format(urllib.quote_plus(show["series"])), headers={"Authorization": [auth]})
+        if not data:
+            self.msg(channel, "Couldn't find a summary for {}".format(show["series"]))
+            return
+        data = data.replace("\r","").replace("\n","")
+        title, plot = re.search("<title>(.*)</title>", data), re.search("<synopsis>(.*)</synopsis>", data)
+        if not title or not plot:
+            self.msg(channel, "Couldn't parse response for {}".format(show["series"]))
+            return
+        h = HTMLParser.HTMLParser()
+        title = h.unescape(title.group(1))
+        plot = h.unescape(plot.group(1)).replace("<br />", " ")
+        print u"\n{}\n{}\n".format(title, plot)
+        self.msg(channel, u"{}: {}".format(title, plot))
     
     @admin
     def cmd_ah(self, user, channel, msg):
@@ -1110,7 +1586,7 @@ class Servrhe(irc.IRCClient):
             self.factory.highlights[show] = []
         self.factory.highlights[show].extend(msg)
         self.msg(channel, 'Highlights for "{}" are now: {}'.format(show, " ".join(self.factory.highlights[show])))
-    
+
     @admin
     def cmd_lh(self, user, channel, msg):
         """.lh [show name] || .lh accel* || Lists highlights for a given show."""
@@ -1456,9 +1932,11 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     bots = ["arutha","cerebrate","[h-subs]rei","vesperia"]
     releases = []
     requests = {}
+    notifies = {}
     # Ripper config
     dcc_destdir = "C:/"
     ass_destdir = "C:/"
+    premux_dir = ""
     ftp_location = ""
     # Release config
     ftp_host = ""
@@ -1470,6 +1948,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     xdcc_port = 21
     xdcc_user = ""
     xdcc_pass = ""
+    xdcc_folder = ""
     seed_host = ""
     seed_port = 21
     seed_user = ""
@@ -1482,6 +1961,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
     tt_pass = ""
     blog_user = ""
     blog_pass = ""
+    mal_user = ""
+    mal_pass = ""
     # Showtime config
     key = ""
     base = "http://commie.milkteafuzz.com/st"
@@ -1505,11 +1986,14 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         reactor.addSystemEventTrigger("before", "shutdown", self.shutdown)
         t = task.LoopingCall(self.refresh_shows)
         t.start(5*60) # 5 minutes
-        event_handler = ServrheObserver(self, reactor, self.observe_dir)
-        self.observer = Observer()
-        self.observer.schedule(event_handler, path=self.observe_dir)
-        self.observer.start()
-        self.observer_running = True
+        n = task.LoopingCall(self.check_notifies)
+        n.start(30) # Every 30 seconds
+        if LOCAL:
+            event_handler = ServrheObserver(self, reactor, self.observe_dir)
+            self.observer = Observer()
+            self.observer.schedule(event_handler, path=self.observe_dir)
+            self.observer.start()
+            self.observer_running = True
     
     def file_change(self, file, size):
         message = "\x02\x034File Added\x0F - {} ({})".format(file, size)
@@ -1577,6 +2061,37 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         topic = unicode(topic).encode("utf-8")
         self.protocols[0].topic("#commie-subs", topic)
 
+    def check_notifies(self):
+        dt = datetime.datetime
+        now = dt.utcnow()
+        shows = []
+        for show in self.shows.itervalues():
+            if show["current_ep"] == show["total_eps"]:
+                continue
+            diff = dt.utcfromtimestamp(show["airtime"]) - now
+            if diff.seconds < 30:
+                shows.append(show["id"])
+        for id in shows:
+            ping = []
+            if id in self.notifies:
+                ping.extend(self.notifies[id].keys())
+                for k, v in self.notifies[id].items():
+                    if v > 0:
+                        if v == 1:
+                            del self.notifies[id][k]
+                        else:
+                            self.notifies[id][k] = v - 1
+            if "*" in self.notifies:
+                ping.extend(self.notifies["*"].keys())
+                for k, v in self.notifies["*"].items():
+                    if v > 0:
+                        if v == 1:
+                            del self.notifies["*"][k]
+                        else:
+                            self.notifies["*"][k] = v - 1
+            if ping:
+                self.broadcast("{}: {} has aired on {}".format(", ".join(ping), self.shows[id]["series"], self.shows[id]["channel"]))
+
     def load_config(self):
         try:
             with open("servrhe.json","r") as f:
@@ -1587,8 +2102,10 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.bots = [str(b) for b in config["bots"]] if "bots" in config else self.bots
                 self.releases = [str(b) for b in config["releases"]] if "releases" in config else self.releases
                 self.requests = config["requests"] if "requests" in config else self.requests
+                self.notifies = config["notifies"] if "notifies" in config else self.notifies
                 self.dcc_destdir = str(config["dcc_destdir"]) if "dcc_destdir" in config else self.dcc_destdir
                 self.ass_destdir = str(config["ass_destdir"]) if "ass_destdir" in config else self.ass_destdir
+                self.premux_dir = str(config["premux_dir"]) if "premux_dir" in config else self.premux_dir
                 self.ftp_location = str(config["ftp_location"]) if "ftp_location" in config else self.ftp_location
                 self.ftp_host = str(config["ftp_host"]) if "ftp_host" in config else self.ftp_host
                 self.ftp_port = int(config["ftp_port"]) if "ftp_port" in config else self.ftp_port
@@ -1599,6 +2116,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.xdcc_port = int(config["xdcc_port"]) if "xdcc_port" in config else self.xdcc_port
                 self.xdcc_user = str(config["xdcc_user"]) if "xdcc_user" in config else self.xdcc_user
                 self.xdcc_pass = str(config["xdcc_pass"]) if "xdcc_pass" in config else self.xdcc_pass
+                self.xdcc_folder = str(config["xdcc_folder"]) if "xdcc_folder" in config else self.xdcc_folder
                 self.seed_host = str(config["seed_host"]) if "seed_host" in config else self.seed_host
                 self.seed_port = int(config["seed_port"]) if "seed_port" in config else self.seed_port
                 self.seed_user = str(config["seed_user"]) if "seed_user" in config else self.seed_user
@@ -1611,6 +2129,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                 self.tt_pass = str(config["tt_pass"]) if "tt_pass" in config else self.tt_pass
                 self.blog_user = str(config["blog_user"]) if "blog_user" in config else self.blog_user
                 self.blog_pass = str(config["blog_pass"]) if "blog_pass" in config else self.blog_pass
+                self.mal_user = str(config["mal_user"]) if "mal_user" in config else self.mal_user
+                self.mal_pass = str(config["mal_pass"]) if "mal_pass" in config else self.mal_pass
                 self.key = str(config["key"]) if "key" in config else self.key
                 self.base = str(config["base"]) if "base" in config else self.base
                 self.positions = [str(b) for b in config["positions"]] if "positions" in config else self.positions
@@ -1629,8 +2149,10 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["bots"] = self.bots
         config["releases"] = self.releases
         config["requests"] = self.requests
+        config["notifies"] = self.notifies
         config["dcc_destdir"] = self.dcc_destdir
         config["ass_destdir"] = self.ass_destdir
+        config["premux_dir"] = self.premux_dir
         config["ftp_location"] = self.ftp_location
         config["ftp_host"] = self.ftp_host
         config["ftp_port"] = self.ftp_port
@@ -1641,6 +2163,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["xdcc_port"] = self.xdcc_port
         config["xdcc_user"] = self.xdcc_user
         config["xdcc_pass"] = self.xdcc_pass
+        config["xdcc_folder"] = self.xdcc_folder
         config["seed_host"] = self.seed_host
         config["seed_port"] = self.seed_port
         config["seed_user"] = self.seed_user
@@ -1653,6 +2176,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         config["tt_pass"] = self.tt_pass
         config["blog_user"] = self.blog_user
         config["blog_pass"] = self.blog_pass
+        config["mal_user"] = self.mal_user
+        config["mal_pass"] = self.mal_pass
         config["key"] = self.key
         config["base"] = self.base
         config["positions"] = self.positions
