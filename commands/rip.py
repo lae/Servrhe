@@ -16,7 +16,7 @@ config = {
 @inlineCallbacks
 def command(self, user, channel, msg):
     name = " ".join(msg)
-    url = "http://host.horriblesubs.info/hsddl/{}".format(urllib.quote(name))
+    url = "{}{}".format(self.factory.config.rip_host, urllib.quote(name))
 
     if name[:-4] != ".mkv":
         self.msg(channel, "Can only rip MKVs")

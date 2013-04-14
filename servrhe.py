@@ -115,6 +115,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "notifies": {},
             "premux_dir": "",
             # Release config
+            "rip_host": "",
             "ftp_host": "",
             "ftp_port": 21,
             "ftp_user": "",
