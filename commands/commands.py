@@ -5,10 +5,7 @@ config = {
 }
 
 def command(self, user, channel, msg):
-    permissions = ["public"]
-    if user.lower() in self.admins and self.admins[user]:
-        permissions.append("admin")
-
+    permissions = self.getPermissions(user)
     r = []
     for command in self.factory.pluginmanager.plugins.values():
         if command["access"] in permissions:

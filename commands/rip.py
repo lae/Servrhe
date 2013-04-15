@@ -18,7 +18,7 @@ def command(self, user, channel, msg):
     name = " ".join(msg)
     url = "{}{}".format(self.factory.config.rip_host, urllib.quote(name))
 
-    if name[:-4] != ".mkv":
+    if name[-4:].lower() != ".mkv":
         self.msg(channel, "Can only rip MKVs")
         return
 
@@ -26,6 +26,7 @@ def command(self, user, channel, msg):
     if response.code != 200:
         self.msg(channel, "{} returned non-successful HTTP code".format(url))
         return
+    self.notice(user, "Downloading {}".format(name))
 
     guid = uuid.uuid4().hex
     while os.path.exists(guid):

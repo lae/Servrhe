@@ -9,8 +9,8 @@ config = {
 
 @inlineCallbacks
 def command(self, user, channel, msg, reverse = False):
-    position = msg[0]
-    if position not in self.factory.config.positions:
+    position = self.getPosition(msg[0])
+    if position is None:
         self.msg(channel, "%s is not a valid position. Try %s, or %s." % (msg[0], ", ".join(self.factory.config.positions[:-1]), self.factory.config.positions[-1]))
         return
     if position == "qc":

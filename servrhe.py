@@ -30,6 +30,19 @@ class Servrhe(irc.IRCClient):
     def connectionLost(self, reason=None):
         print("Disconnected!")
         self.factory.protocols.remove(self)
+
+    def getPermissions(self, user):
+        permissions = ["public"]
+        if user in self.admins and self.admins[user]:
+            permissions.append("admin")
+        return permissions
+
+    def getPosition(self, given):
+        base = given.replace("ing","").replace("or","").replace("er","")
+        for perm in ("or","er"):
+            if base+perm in self.factory.config.positions:
+                return base+perm
+        return None
     
     def privmsg(self, hostmask, channel, msg):
         user = hostmask.split("!", 1)[0]
@@ -43,9 +56,7 @@ class Servrhe(irc.IRCClient):
             reverse = True
             if not self.factory.pluginmanager.plugins[command]["reversible"]:
                 return
-        permissions = ["public"]
-        if user in self.admins and self.admins[user]:
-            permissions.append("admin")
+        permissions = self.getPermissions(user)
         if command in self.factory.pluginmanager.plugins and self.factory.pluginmanager.plugins[command]["access"] in permissions:
             log(user, channel, command, msg, reverse)
             if not self.factory.pluginmanager.plugins[command]["reversible"]:

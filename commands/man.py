@@ -1,3 +1,5 @@
+import fnmatch
+
 config = {
     "access": "public",
     "help": ".man [command] [command] ... || .man man commands || Gives usage and description of commands",
@@ -12,12 +14,27 @@ def command(self, user, channel, msg):
     if user in self.admins and self.admins[user]:
         permissions.append("admin")
 
+    commands = []
+    for command in self.factory.pluginmanager.plugins.values():
+        if command["access"] not in permissions:
+            continue
+        commands.append(command["name"])
+        if command["reversible"]:
+            commands.append("un" + command["name"])
+
+    matches = set()
     for command in msg:
-        command, reverse = command.lower(), False
-        if command not in self.factory.pluginmanager.plugins and command[:2] == "un" and command[2:] in self.factory.pluginmanager.plugins:
-            command = command[2:]
+        command = command.lower()
+        matches.update(set(fnmatch.filter(commands, command)))
+
+    if not matches:
+        return self.msg(channel, "Couldn't find any matching commands")
+    if len(matches) > 5:
+        return self.msg(channel, "No, fuck you. That's too many.")
+
+    for match in matches:
+        reverse = False
+        if match[:2] == "un":
+            match = match[2:]
             reverse = True
-            if not self.factory.pluginmanager.plugins[command]["reversible"]:
-                continue
-        if command in self.factory.pluginmanager.plugins and self.factory.pluginmanager.plugins[command]["access"] in permissions:
-            self.msg(channel, self.factory.pluginmanager.plugins[command]["reverse_help" if reverse else "help"])
+        self.msg(channel, self.factory.pluginmanager.plugins[match]["reverse_help" if reverse else "help"])
