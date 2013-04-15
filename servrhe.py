@@ -6,7 +6,7 @@ from twisted.internet import reactor, protocol, task, defer
 from twisted.words.protocols import irc
 from lib.config import Config
 from lib.pluginmanager import PluginManager
-from lib.utils import log, fetchPage
+from lib.utils import log, fetchPage, normalize
 import urllib, json, datetime
 
 class Servrhe(irc.IRCClient):
@@ -205,10 +205,9 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         shows = yield self.load("shows","current_episodes")
         shows = [(s["abbr"], s["current_ep"], s["last_release"]) for s in shows["results"]]
         shows.sort(key=lambda x: x[2], reverse=True)
-        shows = ", ".join(["{} {:d}".format(s[0],s[1]) for s in shows[:self.topic[1]]])
-        topic = " || ".join([self.config.topic[0], shows, "Mahoyo progress: {:0.2f}%".format(self.topic[2])] + self.topic[3:])
-        topic = unicode(topic).encode("utf-8")
-        self.protocols[0].topic("#commie-subs", topic)
+        shows = ", ".join(["{} {:d}".format(s[0],s[1]) for s in shows[:self.config.topic[1]]])
+        topic = " || ".join([self.config.topic[0], shows, "Mahoyo progress: {:0.2f}%".format(self.config.topic[2])] + self.config.topic[3:])
+        self.protocols[0].topic("#commie-subs", normalize(topic))
 
     def check_notifies(self):
         dt = datetime.datetime

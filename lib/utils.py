@@ -5,6 +5,20 @@ from StringIO import StringIO
 from functools import wraps
 import os
 
+def normalize(s):
+    if not isinstance(s, basestring):
+        try:
+            return str(s)
+        except UnicodeEncodeError:
+            return unicode(s).encode('utf-8','backslashreplace')
+    elif isinstance(s, unicode):
+        return s.encode('utf-8', 'backslashreplace')
+    else:
+        if s.decode('utf-8', 'ignore').encode('utf-8', 'ignore') == s: # Ensure s is a valid UTF-8 string
+            return s
+        else: # Otherwise assume it is Windows 1252
+            return s.decode("cp1252", 'replace').encode('utf-8', 'backslashreplace')
+
 def log(*params):
     print " ".join([repr(x) for x in params])
 
