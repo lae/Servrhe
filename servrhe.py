@@ -193,7 +193,11 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             if s["series"].lower().count(show.lower()):
                 matches.append(s)
         if len(matches) > 1:
-            self.protocols[0].msg(channel, "Show name not specific, found: %s" % ", ".join([s["series"] for s in matches]))
+            r = [s["series"] for s in matches]
+            if len(r) > 5:
+                extra = "and {:d} more.".format(len(r) - 5)
+                r = r[:5] + [extra]
+            self.protocols[0].msg(channel, "Show name not specific, found: %s" % ", ".join(r))
             return None
         elif not matches:
             self.protocols[0].msg(channel, "Show name not found.")
