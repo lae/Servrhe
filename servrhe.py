@@ -6,6 +6,7 @@ from twisted.internet import reactor, protocol, task, defer
 from twisted.words.protocols import irc
 from lib.config import Config
 from lib.pluginmanager import PluginManager
+from lib.markov import Markov
 from lib.utils import log, fetchPage, normalize
 import urllib, json, datetime
 
@@ -48,6 +49,8 @@ class Servrhe(irc.IRCClient):
         user = hostmask.split("!", 1)[0]
         channel = channel if channel != self.nickname else user
         if not msg.startswith("."): # not a trigger command
+            if user.lower() in self.factory.markov:
+                self.factory.markov[user.lower()].learn(msg.split(" "))
             return # do nothing
         command, sep, rest = msg.lstrip(".").partition(" ")
         command, msg, reverse = command.lower(), filter(lambda x: x, rest.split(" ")), False
@@ -63,6 +66,8 @@ class Servrhe(irc.IRCClient):
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg)
             else:
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg, reverse)
+        elif command in self.factory.markov:
+            self.msg(channel, self.factory.markov[command].ramble())
 
     def msg(self, channel, message):
         irc.IRCClient.msg(self, channel, unicode(message).encode("utf-8"))
@@ -125,6 +130,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "channels": ["#commie-subs","#commie-staff"],
             "notifies": {},
             "premux_dir": "",
+            "markov": ["herkz"],
             # Release config
             "rip_host": "",
             "ftp_host": "",
@@ -159,6 +165,9 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "topic": ["☭ Commie Subs ☭",20,20.56]
         })
         self.pluginmanager = PluginManager("commands")
+        self.markov = {}
+        for name in self.config.markov:
+            self.markov[name] = Markov(name + ".json")
         reactor.addSystemEventTrigger("before", "shutdown", self.shutdown)
         t = task.LoopingCall(self.refresh_shows)
         t.start(5*60) # 5 minutes
@@ -258,6 +267,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
 
     def shutdown(self):
         self.config.save()
+        for m in self.markov.values():
+            m.save()
     
 if __name__ == "__main__":
     factory = ServrheFactory()

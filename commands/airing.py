@@ -16,7 +16,7 @@ def command(self, user, channel, msg):
         if show["current_ep"] == show["total_eps"]:
             continue
         diff = dt.utcfromtimestamp(show["airtime"]) - now
-        if diff.days == 0:
+        if diff.days == 0 or show["id"] == 17:
             shows.append((diff,show["series"],show["channel"]))
     shows.sort(key=lambda s: s[0])
     if not shows:
