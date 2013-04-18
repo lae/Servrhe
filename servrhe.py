@@ -34,8 +34,10 @@ class Servrhe(irc.IRCClient):
 
     def getPermissions(self, user):
         permissions = ["public"]
-        if user in self.admins and self.admins[user]:
+        if user.lower() in self.admins and self.admins[user.lower()]:
             permissions.append("admin")
+            if user.lower() == "fugiman":
+                permissions.append("owner")
         return permissions
 
     def getPosition(self, given):
@@ -44,13 +46,25 @@ class Servrhe(irc.IRCClient):
             if base+perm in self.factory.config.positions:
                 return base+perm
         return None
+
+    def alias(self, name, depth=0):
+        name = name.lower()
+        if depth > 20:
+            return name
+        if name in self.factory.config.aliases:
+            return self.alias(self.factory.config.aliases[name], depth+1)
+        return name
     
     def privmsg(self, hostmask, channel, msg):
         user = hostmask.split("!", 1)[0]
         channel = channel if channel != self.nickname else user
         if not msg.startswith("."): # not a trigger command
-            if user.lower() in self.factory.markov:
-                self.factory.markov[user.lower()].learn(msg.split(" "))
+            alias = self.alias(user)
+            if user.lower() in self.admins and not alias in self.factory.markov:
+                self.factory.markov_data[alias] = {}
+                self.factory.markov[alias] = Markov(self.factory.markov_data[alias])
+            if alias in self.factory.markov:
+                self.factory.markov[alias].learn(msg.split(" "))
             return # do nothing
         command, sep, rest = msg.lstrip(".").partition(" ")
         command, msg, reverse = command.lower(), filter(lambda x: x, rest.split(" ")), False
@@ -66,8 +80,8 @@ class Servrhe(irc.IRCClient):
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg)
             else:
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg, reverse)
-        elif command in self.factory.markov:
-            self.msg(channel, self.factory.markov[command].ramble())
+        elif self.alias(command) in self.factory.markov:
+            self.msg(channel, self.factory.markov[self.alias(command)].ramble())
 
     def msg(self, channel, message):
         irc.IRCClient.msg(self, channel, unicode(message).encode("utf-8"))
@@ -77,24 +91,26 @@ class Servrhe(irc.IRCClient):
 
     def userJoined(self, user, channel):
         if channel.lower() == "#commie-staff":
-            self.admins[user] = False
+            self.admins[user.lower()] = False
 
     def userLeft(self, user, channel):
         if channel.lower() == "#commie-staff":
-            del self.admins[user]
+            del self.admins[user.lower()]
 
     def userQuit(self, user, msg):
-        if user in self.admins:
-            del self.admins[user]
+        if user.lower() in self.admins:
+            del self.admins[user.lower()]
 
     def userKicked(self, user, channel, kicker, msg):
         if channel.lower() == "#commie-staff":
-            del self.admins[user]
+            del self.admins[user.lower()]
 
     def userRenamed(self, old, new):
-        if old in self.admins:
-            self.admins[new] = self.admins[old]
-            del self.admins[old]
+        if old.lower() in self.admins:
+            self.admins[new.lower()] = self.admins[old.lower()]
+            del self.admins[old.lower()]
+            if new.lower() not in self.factory.config.aliases and new.lower() != self.alias(old):
+                self.factory.config.aliases[new.lower()] = old.lower()
 
     def irc_RPL_NAMREPLY(self, prefix, params):
         _, _, channel, users = params
@@ -105,9 +121,9 @@ class Servrhe(irc.IRCClient):
                 if rank not in "~&@%+":
                     rank, name = "", user
                 if rank == "&":
-                    self.admins[name] = True
+                    self.admins[name.lower()] = True
                 else:
-                    self.admins[name] = False
+                    self.admins[name.lower()] = False
 
     def modeChanged(self, user, channel, set, modes, args):
         if channel.lower() == "#commie-staff":
@@ -130,7 +146,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "channels": ["#commie-subs","#commie-staff"],
             "notifies": {},
             "premux_dir": "",
-            "markov": ["herkz"],
+            "aliases": {},
             # Release config
             "rip_host": "",
             "ftp_host": "",
@@ -165,9 +181,14 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "topic": ["☭ Commie Subs ☭",20,20.56]
         })
         self.pluginmanager = PluginManager("commands")
+        try:
+            with open("markov.json", "r") as f:
+                self.markov_data = json.loads(f.read())
+        except:
+            self.markov_data = {}
         self.markov = {}
-        for name in self.config.markov:
-            self.markov[name] = Markov(name + ".json")
+        for name, data in self.markov_data.items():
+            self.markov[name] = Markov(data)
         reactor.addSystemEventTrigger("before", "shutdown", self.shutdown)
         t = task.LoopingCall(self.refresh_shows)
         t.start(5*60) # 5 minutes
@@ -267,8 +288,11 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
 
     def shutdown(self):
         self.config.save()
-        for m in self.markov.values():
-            m.save()
+        try:
+            with open("markov.json", "w") as f:
+                f.write(json.dumps(self.markov_data, sort_keys=True, indent=2))
+        except:
+            print "Could not save markov data"
     
 if __name__ == "__main__":
     factory = ServrheFactory()

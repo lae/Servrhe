@@ -1,5 +1,5 @@
 config = {
-    "access": "admin",
+    "access": "owner",
     "help": ".config [save|load] || .config load || Reloads (or resaves) the config",
     "reversible": False
 }

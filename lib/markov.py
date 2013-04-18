@@ -2,25 +2,10 @@ from lib.utils import normalize
 import json, random
 
 class Markov(object):
-    def __init__(self, db, order=3):
-        self.db = db
+    def __init__(self, data, order=3):
+        self.cache = data
         self.order = order
-        self.load()
-
-    def save(self):
-        try:
-            with open(self.db, "w") as f:
-                f.write(json.dumps(self.cache))
-        except:
-            print "Failed to save markov database ({})".format(self.db)
-
-    def load(self):
-        try:
-            with open(self.db, "r") as f:
-                self.cache = json.loads(f.read())
-        except:
-            self.cache = {"": {}}
-
+    
     def learn(self, phrase):
         order = -1 * (self.order - 1)
         for i in range(len(phrase) + 1):

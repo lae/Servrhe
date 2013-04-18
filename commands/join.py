@@ -1,5 +1,5 @@
 config = {
-    "access": "admin",
+    "access": "owner",
     "help": ".join [channel] [channel] ... || .join #commie-subs || Makes the bot join channels",
     "reversible": True,
     "reverse_help": ".unjoin [channel] [channel] ... || .unjoin #commie-subs || Makes the bot leave channels"

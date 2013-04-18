@@ -1,5 +1,5 @@
 config = {
-    "access": "admin",
+    "access": "owner",
     "help": ".reload || .reload || Reloads all commands",
     "reversible": False
 }
