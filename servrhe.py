@@ -2,10 +2,12 @@
 # -*- coding: utf-8 -*-
 
 # Actual bot stuff
+from twisted.enterprise import adbapi
 from twisted.internet import reactor, protocol, task, defer
 from twisted.words.protocols import irc
 from lib.config import Config
 from lib.pluginmanager import PluginManager
+from lib.alias import Aliases
 from lib.markov import Markov
 from lib.utils import log, fetchPage, normalize
 import urllib, json, datetime
@@ -47,24 +49,13 @@ class Servrhe(irc.IRCClient):
                 return base+perm
         return None
 
-    def alias(self, name, depth=0):
-        name = name.lower()
-        if depth > 20:
-            return name
-        if name in self.factory.config.aliases:
-            return self.alias(self.factory.config.aliases[name], depth+1)
-        return name
-    
+    @defer.inlineCallbacks
     def privmsg(self, hostmask, channel, msg):
         user = hostmask.split("!", 1)[0]
         channel = channel if channel != self.nickname else user
         if not msg.startswith("."): # not a trigger command
-            alias = self.alias(user)
-            if user.lower() in self.admins and not alias in self.factory.markov:
-                self.factory.markov_data[alias] = {}
-                self.factory.markov[alias] = Markov(self.factory.markov_data[alias])
-            if alias in self.factory.markov:
-                self.factory.markov[alias].learn(msg.split(" "))
+            alias = self.factory.alias.resolve(user)
+            self.factory.markov.learn(alias, msg)
             return # do nothing
         command, sep, rest = msg.lstrip(".").partition(" ")
         command, msg, reverse = command.lower(), filter(lambda x: x, rest.split(" ")), False
@@ -80,8 +71,11 @@ class Servrhe(irc.IRCClient):
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg)
             else:
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg, reverse)
-        elif self.alias(command) in self.factory.markov:
-            self.msg(channel, self.factory.markov[self.alias(command)].ramble())
+        else:
+            alias = self.factory.alias.resolve(command)
+            if alias in self.factory.markov.users:
+                message = yield self.factory.markov.ramble(alias)
+                self.msg(channel, message)
 
     def msg(self, channel, message):
         irc.IRCClient.msg(self, channel, unicode(message).encode("utf-8"))
@@ -109,8 +103,7 @@ class Servrhe(irc.IRCClient):
         if old.lower() in self.admins:
             self.admins[new.lower()] = self.admins[old.lower()]
             del self.admins[old.lower()]
-            if new.lower() not in self.factory.config.aliases and new.lower() != self.alias(old):
-                self.factory.config.aliases[new.lower()] = old.lower()
+            self.factory.aliases.add(old, new)
 
     def irc_RPL_NAMREPLY(self, prefix, params):
         _, _, channel, users = params
@@ -130,7 +123,7 @@ class Servrhe(irc.IRCClient):
             # "aqohv"
             for mode, name in zip(modes, args):
                 if mode == "a":
-                    self.admins[name] = set
+                    self.admins[name.lower()] = set
     
 class ServrheFactory(protocol.ReconnectingClientFactory):
     # Protocol config
@@ -146,7 +139,6 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "channels": ["#commie-subs","#commie-staff"],
             "notifies": {},
             "premux_dir": "",
-            "aliases": {},
             # Release config
             "rip_host": "",
             "ftp_host": "",
@@ -178,17 +170,19 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "base": "http://commie.milkteafuzz.com/st",
             "positions": ["translator","editor","typesetter","timer","encoding"],
             # Topic config
-            "topic": ["☭ Commie Subs ☭",20,20.56]
+            "topic": ["☭ Commie Subs ☭",20,20.56],
+            # Database
+            "db_library": "",
+            "db_host": "",
+            "db_port": "",
+            "db_database": "",
+            "db_user": "",
+            "db_pass": ""
         })
         self.pluginmanager = PluginManager("commands")
-        try:
-            with open("markov.json", "r") as f:
-                self.markov_data = json.loads(f.read())
-        except:
-            self.markov_data = {}
-        self.markov = {}
-        for name, data in self.markov_data.items():
-            self.markov[name] = Markov(data)
+        self.db = adbapi.ConnectionPool(self.config.db_library, host=self.config.db_host, port=self.config.db_port, db=self.config.db_database, user=self.config.db_user, passwd=self.config.db_pass, cp_reconnect=True)
+        self.alias = Aliases("alias.json")
+        self.markov = Markov(self.db, self.alias)
         reactor.addSystemEventTrigger("before", "shutdown", self.shutdown)
         t = task.LoopingCall(self.refresh_shows)
         t.start(5*60) # 5 minutes
@@ -288,11 +282,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
 
     def shutdown(self):
         self.config.save()
-        try:
-            with open("markov.json", "w") as f:
-                f.write(json.dumps(self.markov_data, sort_keys=True, indent=2))
-        except:
-            print "Could not save markov data"
+        self.alias.save()
     
 if __name__ == "__main__":
     factory = ServrheFactory()

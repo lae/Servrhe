@@ -1,4 +1,4 @@
-from lib.markov import Markov
+from twisted.internet.defer import inlineCallbacks
 
 config = {
     "access": "public",
@@ -6,12 +6,17 @@ config = {
     "reversible": False
 }
 
+@inlineCallbacks
 def command(self, user, channel, msg):
     if not msg:
-        return self.msg(channel, "Need a name")
-    name, permissions = self.alias(msg[0]), self.getPermissions(user)
+        self.msg(channel, "Need a name")
+        return
+    name, permissions = self.factory.alias.resolve(msg[0]), self.getPermissions(user)
     if "owner" not in permissions or name != "list":
-        if name not in self.factory.markov:
-            return self.msg(channel, "No data on {}".format(msg[0]))
-        return self.msg(channel, self.factory.markov[name].ramble())
-    return self.notice(user, ", ".join(self.factory.markov.keys()))
+        if name not in self.factory.markov.users:
+            self.msg(channel, "No data on {}".format(msg[0]))
+            return
+        message = yield self.factory.markov.ramble(name)
+        self.msg(channel, message)
+        return
+    self.msg(channel, ", ".join(self.factory.markov.users.keys()))

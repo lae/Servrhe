@@ -13,7 +13,7 @@ def command(self, user, channel, msg):
     if not msg:
         self.msg(channel, "Must provide a victim to check")
         return
-    victim = self.alias(" ".join(msg))
+    victim = self.factory.alias.resolve(" ".join(msg))
     dt = datetime.datetime
     yield self.factory.refresh_shows()
     shows = []
@@ -32,7 +32,7 @@ def command(self, user, channel, msg):
         elif not show["qc_status"]:
             blame = show["qc"]
 
-        if self.alias(blame) == victim:
+        if self.factory.alias.resolve(blame) == victim:
             shows.append(show)
     if not shows:
         self.msg(channel, "{} is not stalling anything right now.".format(victim))
