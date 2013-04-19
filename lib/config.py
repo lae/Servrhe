@@ -1,3 +1,4 @@
+from lib.utils import normalize
 import json
 
 def clean(o):
@@ -9,7 +10,7 @@ def clean(o):
     elif isinstance(o, list):
         return [clean(v) for v in o]
     elif isinstance(o, basestring):
-        return unicode(o).encode("utf-8")
+        return normalize(o)
     else:
         return o
 

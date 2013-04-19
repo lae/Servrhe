@@ -8,15 +8,24 @@ config = {
 
 @inlineCallbacks
 def command(self, user, channel, msg):
-    if not msg:
-        self.msg(channel, "Need a name")
+    permissions = self.getPermissions(user)
+    if "owner" not in permissions:
+        self.notice(user, "Temporarily disabled due to oENDERo")
         return
-    name, permissions = self.factory.alias.resolve(msg[0]), self.getPermissions(user)
+    if not msg:
+        message = yield self.factory.markov.ramble()
+        self.msg(channel, message)
+        return
+    name = self.factory.alias.resolve(msg[0])
     if "owner" not in permissions or name != "list":
         if name not in self.factory.markov.users:
             self.msg(channel, "No data on {}".format(msg[0]))
             return
-        message = yield self.factory.markov.ramble(name)
-        self.msg(channel, message)
+        if self.isAdmin(name) and user.lower() not in self.admins:
+            self.kick(channel, user, "Do not highlight staff")
+        else:
+            seed = msg[1] if len(msg) > 1 else ""
+            message = yield self.factory.markov.ramble(name, seed)
+            self.msg(channel, message)
         return
     self.msg(channel, ", ".join(self.factory.markov.users.keys()))

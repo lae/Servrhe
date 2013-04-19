@@ -11,7 +11,7 @@ def command(self, user, channel, msg):
         return self.msg(channel, "Duration and name required")
     duration, name = msg[0], " ".join(msg[1:])
     if name != "*":
-        show = self.factory.resolve(id, channel)
+        show = self.factory.resolve(name, channel)
         if not show:
             return
         id = show["id"]

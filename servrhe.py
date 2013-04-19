@@ -49,7 +49,12 @@ class Servrhe(irc.IRCClient):
                 return base+perm
         return None
 
-    @defer.inlineCallbacks
+    def isAdmin(self, alias):
+        for name in self.admins.keys():
+            if alias == self.factory.alias.resolve(name):
+                return True
+        return False
+
     def privmsg(self, hostmask, channel, msg):
         user = hostmask.split("!", 1)[0]
         channel = channel if channel != self.nickname else user
@@ -73,15 +78,15 @@ class Servrhe(irc.IRCClient):
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg, reverse)
         else:
             alias = self.factory.alias.resolve(command)
-            if alias in self.factory.markov.users:
-                message = yield self.factory.markov.ramble(alias)
-                self.msg(channel, message)
+            if alias in self.factory.markov.users and "markov" in self.factory.pluginmanager.plugins:
+                msg = [alias] + msg
+                self.factory.pluginmanager.plugins["markov"]["command"](self, user, channel, msg)
 
     def msg(self, channel, message):
-        irc.IRCClient.msg(self, channel, unicode(message).encode("utf-8"))
+        irc.IRCClient.msg(self, channel, normalize(message))
 
     def notice(self, user, message):
-        irc.IRCClient.notice(self, user, unicode(message).encode("utf-8"))
+        irc.IRCClient.notice(self, user, normalize(message))
 
     def userJoined(self, user, channel):
         if channel.lower() == "#commie-staff":
@@ -103,7 +108,7 @@ class Servrhe(irc.IRCClient):
         if old.lower() in self.admins:
             self.admins[new.lower()] = self.admins[old.lower()]
             del self.admins[old.lower()]
-            self.factory.aliases.add(old, new)
+            self.factory.alias.add(old, new)
 
     def irc_RPL_NAMREPLY(self, prefix, params):
         _, _, channel, users = params

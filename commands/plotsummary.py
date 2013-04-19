@@ -3,7 +3,7 @@ from lib.utils import fetchPage
 import base64, urllib, re, HTMLParser
 
 config = {
-    "access": "public",
+    "access": "admin",
     "help": ".plotsummary [show name] || .plotsummary eotena || Gives a summary of the show, taken from MAL",
     "reversible": False
 }
@@ -20,7 +20,7 @@ def command(self, user, channel, msg):
         self.msg(channel, "Couldn't find a summary for {}".format(show["series"]))
         return
     data = data.replace("\r","").replace("\n","")
-    title, plot = re.search("<title>(.*)</title>", data), re.search("<synopsis>(.*)</synopsis>", data)
+    title, plot = re.search("<title>(.*?)</title>", data), re.search("<synopsis>(.*?)</synopsis>", data)
     if not title or not plot:
         self.msg(channel, "Couldn't parse response for {}".format(show["series"]))
         return
