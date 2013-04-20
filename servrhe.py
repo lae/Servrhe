@@ -146,6 +146,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "premux_dir": "",
             # Release config
             "rip_host": "",
+            "cr_user": "",
+            "cr_pass": "",
             "ftp_host": "",
             "ftp_port": 21,
             "ftp_user": "",

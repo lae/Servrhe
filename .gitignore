@@ -4,3 +4,6 @@
 servrhe.json
 markov.json
 alias.json
+
+# Secrets
+lib/crunchy.py
