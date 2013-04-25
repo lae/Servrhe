@@ -16,7 +16,7 @@ def clean(o):
 
 class Config(object):
     location = None
-    config = None
+    config = {}
 
     def __init__(self, location, defaults = {}):
         self.location = location
@@ -45,9 +45,7 @@ class Config(object):
             raise AttributeError
 
     def __setattr__(self, name, value):
-        if hasattr(self, name):
-            super(Config, self).__setattr__(name, value)
-        elif name in self.config:
+        if name in self.config:
             self.config[name] = value
         else:
-            raise AttributeError
+            super(Config, self).__setattr__(name, value)

@@ -18,21 +18,36 @@ def command(self, user, channel, msg):
     if "owner" in permissions:
         cooldown = datetime.timedelta(minutes=0)
     elif "admin" in permissions:
-        cooldown = datetime.timedelta(minutes=1)
+        cooldown = datetime.timedelta(minutes=0)
+    elif user.lower() in self.admins: # Just for aers
+        cooldown = datetime.timedelta(minutes=0)
     else:
         cooldown = datetime.timedelta(minutes=3)
 
-    if user in cooldowns and cooldowns[user][0] > now:
-        if cooldowns[user][1]:
+    if user not in cooldowns:
+        cooldowns[user] = {
+            "time": now,
+            "warnings": 0,
+            "kicks": 0
+        }
+    if cooldowns[user]["time"] > now:
+        if cooldowns[user]["warnings"] >= 5 or cooldowns[user]["kicks"] >= 10:
+            cooldowns[user]["warnings"] = 0
+            cooldowns[user]["kicks"] = 0
+            self.mode(channel, True, "b", mask=user+"!*@*")
+            self.kick(channel, user, "Markov command abuse")
+        elif cooldowns[user]["warnings"] >= 3:
+            cooldowns[user]["kicks"] += 1
             self.kick(channel, user, "Markov command abuse")
         else:
-            cooldowns[user][1] = True
-            diff = dt2ts(cooldowns[user][0] - now)
+            cooldowns[user]["warnings"] += 1
+            diff = dt2ts(cooldowns[user]["time"] - now)
             self.notice(user, "You just used this command, please wait {} before using it again.".format(diff))
         return
 
     if not msg:
-        cooldowns[user] = [now + cooldown, False]
+        cooldowns[user]["time"] = now + cooldown
+        cooldowns[user]["warnings"] = 0
         message = yield self.factory.markov.ramble()
         self.msg(channel, message)
         return
@@ -46,7 +61,8 @@ def command(self, user, channel, msg):
             self.msg(channel, "No data on {}".format(msg[0]))
             return
         else:
-            cooldowns[user] = [now + cooldown, False]
+            cooldowns[user]["time"] = now + cooldown
+            cooldowns[user]["warnings"] = 0
             seed = msg[1] if len(msg) > 1 else ""
             message = yield self.factory.markov.ramble(name, seed)
             self.msg(channel, message)

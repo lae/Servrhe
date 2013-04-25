@@ -8,6 +8,8 @@ from twisted.words.protocols import irc
 from lib.config import Config
 from lib.pluginmanager import PluginManager
 from lib.alias import Aliases
+from lib.crunchy import Crunchyroll
+from lib.funi import Funimation
 from lib.markov import Markov
 from lib.utils import log, fetchPage, normalize
 import urllib, json, datetime
@@ -44,7 +46,7 @@ class Servrhe(irc.IRCClient):
 
     def getPosition(self, given):
         base = given.replace("ing","").replace("or","").replace("er","")
-        for perm in ("or","er"):
+        for perm in ("","or","er"):
             if base+perm in self.factory.config.positions:
                 return base+perm
         return None
@@ -148,6 +150,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "rip_host": "",
             "cr_user": "",
             "cr_pass": "",
+            "funi_user": "",
+            "funi_pass": "",
             "ftp_host": "",
             "ftp_port": 21,
             "ftp_user": "",
@@ -190,6 +194,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         self.db = adbapi.ConnectionPool(self.config.db_library, host=self.config.db_host, port=self.config.db_port, db=self.config.db_database, user=self.config.db_user, passwd=self.config.db_pass, cp_reconnect=True)
         self.alias = Aliases("alias.json")
         self.markov = Markov(self.db, self.alias)
+        self.crunchy = Crunchyroll("crunchyroll.json", self.config)
+        self.funi = Funimation("funimation.json", self.config)
         reactor.addSystemEventTrigger("before", "shutdown", self.shutdown)
         t = task.LoopingCall(self.refresh_shows)
         t.start(5*60) # 5 minutes
@@ -284,12 +290,14 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
                         else:
                             self.config.notifies["*"][k] = v - 1
             if ping:
-                self.broadcast("{}: {} has aired on {}".format(", ".join(ping), self.shows[id]["series"], self.shows[id]["channel"]))
+                show = self.shows[id]
+                self.broadcast("{}: Episode {:d} of {} has aired on {}".format(", ".join(ping), show["current_ep"]+1, show["series"], show["channel"]))
 
 
     def shutdown(self):
         self.config.save()
         self.alias.save()
+        self.funi.save()
     
 if __name__ == "__main__":
     factory = ServrheFactory()

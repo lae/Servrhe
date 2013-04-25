@@ -1,5 +1,6 @@
 from twisted.internet.defer import inlineCallbacks, returnValue
-from lib.utils import normalize
+from twisted.internet.task import LoopingCall
+from bs4 import UnicodeDammit
 import json, random
 
 class Markov(object):
@@ -8,13 +9,27 @@ class Markov(object):
         self.aliases = aliases
         self.order = order
         self.users = {}
+        self.ranking = {}
         self.loadUsers()
+        LoopingCall(self.loadRanking).start(3600)
 
     @inlineCallbacks
     def loadUsers(self):
         result = yield self.db.runQuery("SELECT DISTINCT name FROM parts")
         for line in result:
             self.users[line[0]] = True
+
+    @inlineCallbacks
+    def loadRanking(self):
+        result = yield self.db.runQuery("SELECT DISTINCT a.name, b.name_count FROM parts a INNER JOIN (SELECT name, COUNT(name) as name_count FROM parts GROUP BY name) b ON a.name = b.name ORDER BY b.name_count DESC")
+        self.ranking = {}
+        for rank, line in enumerate(result):
+            name, lines = line
+            self.ranking[name.lower()] = {
+                "rank": rank+1,
+                "name": name,
+                "lines": lines
+            }
     
     @inlineCallbacks
     def learn(self, name, phrase):
@@ -29,9 +44,9 @@ class Markov(object):
         phrase = filter(lambda x: x and "http" not in x and "ftp:" not in x and x[0] != ".", phrase)
 
         for i in range(len(phrase) + 1):
-            seed = normalize(" ".join(phrase[:i][order:]))
-            small = normalize(phrase[i-1] if i > 0 else "")
-            answer = normalize(phrase[i] if i < len(phrase) else "")
+            seed = UnicodeDammit.detwingle(" ".join(phrase[:i][order:]))
+            small = UnicodeDammit.detwingle(phrase[i-1] if i > 0 else "")
+            answer = UnicodeDammit.detwingle(phrase[i] if i < len(phrase) else "")
 
             yield self.db.runQuery("INSERT INTO parts(name, seed, answer) VALUES(%s, %s, %s)", (name, seed, answer))
 
@@ -48,19 +63,22 @@ class Markov(object):
         message = []
 
         if seed:
+            seed = UnicodeDammit.detwingle(seed)
             chunk = seed
-            while chunk and len(" ".join(message)) < 400:
+            while chunk and len(" ".join(message)) < 300:
                 message.append(chunk)
                 chunk = yield self.prev(name, chunk)
             message.reverse()
 
         chunk = yield self.next(name, seed)
-        while chunk and len(" ".join(message)) < 400:
+        while chunk and len(" ".join(message)) < 300:
             message.append(chunk)
             chunk = yield self.next(name, chunk)
+            if not chunk and len(" ".join(message)) < 30:
+                chunk = yield self.next(name, chunk)
 
-        response = " ".join(message)
-        if seed and response == seed:
+        response = (" ".join(message)).decode("utf8")
+        if seed and response == seed.decode("utf8"):
             response = yield self.ramble(name)
         returnValue(response)
 

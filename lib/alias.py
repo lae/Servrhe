@@ -26,7 +26,10 @@ class Aliases(object):
             return
         if self.resolve(original) == alias:
             return
-        self.cache[alias] = original
+        if alias in self.cache.values():
+            self.cache[original] = alias
+        else:
+            self.cache[alias] = original
 
     def resolve(self, name, depth=0):
         name = name.lower()

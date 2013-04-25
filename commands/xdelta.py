@@ -75,7 +75,7 @@ def command(self, user, channel, msg):
             yield ftp.quit()
             ftp.fail(None)
             return
-    shutil.copyfile("{}/{}".format(self.factory.premux_dir, premux), "{}/{}".format(guid, premux))
+    shutil.copyfile("{}/{}".format(self.factory.config.premux_dir, premux), "{}/{}".format(guid, premux))
     script_len = [x["size"] for x in filelist.files if x["filename"] == script][0]
     script_downloader = Downloader("{}/{}".format(guid, script))
     yield ftp.retrieveFile(script, script_downloader)

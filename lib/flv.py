@@ -475,6 +475,330 @@ class VideoWriter(Writer):
         raise Exception('interface')
 
 
+##########################
+### video/aviwriter.py ###
+##########################
+
+from ctypes import BigEndianStructure, c_uint, c_ulonglong
+from os import SEEK_CUR
+
+class H263FrameHeader(BigEndianStructure):
+    _fields_ = [
+                  ('header',                c_uint, 17),
+                  ('picformat',             c_uint, 5),
+                  ('ts',                    c_uint, 8),
+                  ('format',                c_uint, 3)
+                ]
+
+class FLASHSVFrameHeader(BigEndianStructure):
+    _fields_ = [
+                  ('blockWidth',            c_uint, 4),
+                  ('imageWidth',            c_uint, 12),
+                  ('blockHeight',           c_uint, 4),
+                  ('imageHeight',           c_uint, 12)
+                ]
+
+class VP6FrameHeader(BigEndianStructure):
+    _fields_ = [
+                  ('deltaFrameFlag',        c_uint, 1),
+                  ('quant',                 c_uint, 6),
+                  ('separatedCoeffFlag',    c_uint, 1),
+                  ('subVersion',            c_uint, 5),
+                  ('filterHeader',          c_uint, 2),
+                  ('interlacedFlag',        c_uint, 1)
+                  ]
+
+class VideoFormat(object):
+    CIF     = (352, 288)
+    QCIF    = (176, 144)
+    SQCIF   = (128, 96)
+    QVGA    = (320, 240)
+    QQVGA   = (160, 120)
+
+class AVIWriter(VideoWriter):
+    __slots__  = [ '_codecID', '_warnings', '_isAlphaWriter', '_alphaWriter' ]
+    __slots__ += [ '_width', '_height', '_frameCount' ]
+    __slots__ += [ '_index', '_moviDataSize' ]
+
+    # Chunk:          Off:  Len:
+    #
+    # RIFF AVI          0    12
+    #   LIST hdrl      12    12
+    #     avih         24    64
+    #     LIST strl    88    12
+    #       strh      100    64
+    #       strf      164    48
+    #   LIST movi     212    12
+    #     (frames)    224   ???
+    #   idx1          ???   ???
+
+    def CodecFourCC(self):
+        if self._codecID == VideoTagHeader.H263:
+            return 'FLV1'
+        elif self._codecID in (VideoTagHeader.VP6, VideoTagHeader.VP6v2):
+            return 'VP6F'
+        elif self._codecID in (VideoTagHeader.SCREEN, VideoTagHeader.SCREENv2): # FIXME: v2?
+            return 'FSV1'
+
+    def __init__(self, path, codecID, warnings, isAlphaWriter=False):
+        super(AVIWriter, self).__init__(path)
+        self._codecID = codecID
+        self._isAlphaWriter = isAlphaWriter
+        self._alphaWriter = None
+        self._warnings = warnings
+
+        self._width = self._height = self._frameCount = 0
+        self._index = []
+        self._moviDataSize = 0
+
+        if codecID not in (VideoTagHeader.H263, VideoTagHeader.SCREEN, VideoTagHeader.SCREENv2, VideoTagHeader.VP6, VideoTagHeader.VP6v2):
+            raise Exception('Unsupported video codec')
+
+        if (codecID == VideoTagHeader.VP6v2) and not isAlphaWriter:
+            self._alphaWriter = AVIWriter(path[:-4] + 'alpha.avi', codecID, warnings, True)
+
+        self.WriteFourCC('RIFF')
+        self.Write(BitConverterLE.FromUInt32(0)) # chunk size
+        self.WriteFourCC('AVI ')
+
+        self.WriteFourCC('LIST')
+        self.Write(BitConverterLE.FromUInt32(192))
+        self.WriteFourCC('hdrl')
+
+        self.WriteFourCC('avih')
+        self.Write(BitConverterLE.FromUInt32(56))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0x10))
+        self.Write(BitConverterLE.FromUInt32(0)) # frame count
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(1))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0)) # width
+        self.Write(BitConverterLE.FromUInt32(0)) # height
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+
+        self.WriteFourCC('LIST')
+        self.Write(BitConverterLE.FromUInt32(116))
+        self.WriteFourCC('strl')
+
+        self.WriteFourCC('strh')
+        self.Write(BitConverterLE.FromUInt32(56))
+        self.WriteFourCC('vids')
+        self.WriteFourCC(self.CodecFourCC())
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0)) # frame rate denominator
+        self.Write(BitConverterLE.FromUInt32(0)) # frame rate numerator
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0)) # frame count
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromInt32(-1))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt16(0))
+        self.Write(BitConverterLE.FromUInt16(0))
+        self.Write(BitConverterLE.FromUInt16(0)) # width
+        self.Write(BitConverterLE.FromUInt16(0)) # height
+
+        self.WriteFourCC('strf')
+        self.Write(BitConverterLE.FromUInt32(40))
+        self.Write(BitConverterLE.FromUInt32(40))
+        self.Write(BitConverterLE.FromUInt32(0)) # width
+        self.Write(BitConverterLE.FromUInt32(0)) # height
+        self.Write(BitConverterLE.FromUInt16(1))
+        self.Write(BitConverterLE.FromUInt16(24))
+    
+        self.WriteFourCC(self.CodecFourCC())
+        self.Write(BitConverterLE.FromUInt32(0)) # biSizeImage
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Write(BitConverterLE.FromUInt32(0))
+    
+        self.WriteFourCC('LIST')
+        self.Write(BitConverterLE.FromUInt32(0)) # chunk size
+        self.WriteFourCC('movi')
+
+    def WriteChunk(self, chunk, timeStamp, frameType):
+        offset = 0
+        length = len(chunk)
+
+        if self._codecID == VideoTagHeader.VP6:
+            offset = 1
+            length -= 1
+        elif self._codecID == VideoTagHeader.VP6v2:
+            offset = 4
+            if length >= 4:
+                alphaOffset = BitConverterBE.ToUInt32(chunk, 0) & 0xffffff
+                if not self._isAlphaWriter:
+                    length = alphaOffset
+                else:
+                    offset += alphaOffset
+                    length -= offset
+            else:
+                length = 0
+
+        length = max(length, 0)
+        length = min(length, len(chunk) - offset)
+
+        self._index.append(0x10 if (frameType == 1) else 0)
+        self._index.append(self._moviDataSize + 4)
+        self._index.append(length)
+
+        if (self._width == 0) and (self._height == 0):
+            self.GetFrameSize(chunk)
+
+        self.WriteFourCC('00dc')
+        self.Write(BitConverterLE.FromInt32(length))
+        self.Write(chunk, offset, length)
+
+        if (length % 2) != 0:
+            self.Write('\x00')
+            length += 1
+
+        self._moviDataSize += length + 8
+        self._frameCount += 1
+
+        if self._alphaWriter is not None:
+            self._alphaWriter.WriteChunk(chunk, timeStamp, frameType)
+
+    def GetFrameSize(self, chunk):
+        if self._codecID == VideoTagHeader.H263:
+            # Reference: flv_h263_decode_picture_header from libavcodec's h263.c
+            if len(chunk) < 10: return
+
+            x = c_ulonglong(BitConverterBE.ToUInt64(chunk, 2))
+
+            if BitHelper.Read(x, 1) != 1:
+                return
+
+            BitHelper.Read(x, 5)
+            BitHelper.Read(x, 8)
+
+            _format = BitHelper.Read(x, 3)
+
+            if _format == 0:
+                self._width = BitHelper.Read(x, 8)
+                self._height = BitHelper.Read(x, 8)
+            elif _format == 1:
+                self._width = BitHelper.Read(x, 16)
+                self._height = BitHelper.Read(x, 16)
+            elif _format == 2:
+                self._width, self._height = VideoFormat.CIF
+            elif _format == 3:
+                self._width, self._height = VideoFormat.QCIF
+            elif _format == 4:
+                self._width, self._height = VideoFormat.SQCIF
+            elif _format == 5:
+                self._width, self._height = VideoFormat.QVGA
+            elif _format == 6:
+                self._width, self._height = VideoFormat.QQVGA
+
+            #hdr = H263FrameHeader.from_buffer_copy(chunk)
+
+            #if hdr.header != 1: # h263 header
+            #    return
+
+            #if hdr.picformat not in (0, 1): # picture format 0: h263 escape codes 1: 11-bit escape codes 
+            #    return
+
+        elif self._codecID in (VideoTagHeader.SCREEN, VideoTagHeader.SCREENv2): # FIXME: v2?
+            # Reference: flashsv_decode_frame from libavcodec's flashsv.c
+            # notice: libavcodec checks if width/height changes
+            if len(chunk) < 4: return
+
+            hdr = FLASHSVFrameHeader.from_buffer_copy(chunk)
+            self._width = hdr.imageWidth
+            self._height = hdr.imageHeight
+
+        elif self._codecID in (VideoTagHeader.VP6, VideoTagHeader.VP6v2):
+            # Reference: vp6_parse_header from libavcodec's vp6.c
+            skip = 1 if (self._codecID == VideoTagHeader.VP6) else 4
+            if len(chunk) < (skip + 8): return
+
+            hdr = VP6FrameHeader.from_buffer_copy(chunk, skip)
+
+            if hdr.deltaFrameFlag != 0:
+                return
+
+            if hdr.separatedCoeffFlag or hdr.filterHeader: # skip 16 bit
+                xy = chunk[skip + 2:skip + 4]
+            else:
+                xy = chunk[skip:skip + 2]
+
+            self._height = xy[0] * 16
+            self._width = xy[1] * 16
+
+            # chunk[0] contains the width and height (4 bits each, respectively) that should
+            # be cropped off during playback, which will be non-zero if the encoder padded
+            # the frames to a macroblock boundary.  But if you use this adjusted size in the
+            # AVI header, DirectShow seems to ignore it, and it can cause stride or chroma
+            # alignment problems with VFW if the width/height aren't multiples of 4.
+            if not self._isAlphaWriter:
+                cropX = chunk[0] >> 4
+                cropY = chunk[0] & 0xf
+                if (cropX != 0) or (cropY != 0):
+                    self._warnings.append('Suggested cropping: %d pixels from right, %d pixels from bottom' % (cropX, cropY))
+
+    __slots__ += [ '_indexChunkSize' ]
+    def WriteIndexChunk(self):
+        indexDataSize = self._frameCount * 16
+
+        self.WriteFourCC('idx1')
+        self.Write(BitConverterLE.FromUInt32(indexDataSize))
+
+        for i in xrange(self._frameCount):
+            self.WriteFourCC('00dc')
+            self.Write(BitConverterLE.FromUInt32(self._index[(i * 3) + 0]))
+            self.Write(BitConverterLE.FromUInt32(self._index[(i * 3) + 1]))
+            self.Write(BitConverterLE.FromUInt32(self._index[(i * 3) + 2]))
+
+        self._indexChunkSize = indexDataSize + 8
+
+    def Finish(self, averageFrameRate):
+        self.WriteIndexChunk()
+
+        self.Seek(4)
+        self.Write(BitConverterLE.FromUInt32(224 + self._moviDataSize + self._indexChunkSize - 8))
+
+        self.Seek(24 + 8)
+        self.Write(BitConverterLE.FromUInt32(0))
+        self.Seek(12, SEEK_CUR)
+        self.Write(BitConverterLE.FromUInt32(self._frameCount))
+        self.Seek(12, SEEK_CUR)
+        self.Write(BitConverterLE.FromUInt32(self._width))
+        self.Write(BitConverterLE.FromUInt32(self._height))
+
+        self.Seek(100 + 28)
+        self.Write(BitConverterLE.FromUInt32(averageFrameRate.denominator))
+        self.Write(BitConverterLE.FromUInt32(averageFrameRate.numerator))
+        self.Seek(4, SEEK_CUR)
+        self.Write(BitConverterLE.FromUInt32(self._frameCount))
+        self.Seek(16, SEEK_CUR)
+        self.Write(BitConverterLE.FromUInt16(self._width))
+        self.Write(BitConverterLE.FromUInt16(self._height))
+
+        self.Seek(164 + 12)
+        self.Write(BitConverterLE.FromUInt32(self._width))
+        self.Write(BitConverterLE.FromUInt32(self._height))
+        self.Seek(8, SEEK_CUR)
+        self.Write(BitConverterLE.FromUInt32(self._width * self._height * 6))
+
+        self.Seek(212 + 4)
+        self.Write(BitConverterLE.FromUInt32(self._moviDataSize + 4))
+
+        self.Close()
+
+        if self._alphaWriter is not None:
+            self._alphaWriter.Finish(averageFrameRate)
+            self._alphaWriter = None
+
+
 ##############################
 ### video/rawh264writer.py ###
 ##############################
@@ -646,3 +970,471 @@ class AACWriter(AudioWriter):
 
     def Finish(self):
         self.Close()
+
+
+##########################
+### audio/mp3writer.py ###
+##########################
+
+from ctypes import BigEndianStructure, c_uint
+
+# http://www.mp3-tech.org/programmer/frame_header.html
+
+MPEG1BitRate        = [ 0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320 ]
+MPEG2XBitRate       = [ 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 ]
+MPEG1SampleRate     = [ 44100, 48000, 32000 ]
+MPEG20SampleRate    = [ 22050, 24000, 16000 ]
+MPEG25SampleRate    = [ 11025, 12000, 8000 ]
+
+class MPEGVersion:
+    MPEG25      = 0b00
+    RESERVED    = 0b01
+    MPEG2       = 0b10
+    MPEG1       = 0b11
+
+class LAYER:
+    RESERVED    = 0b00
+    LAYER3      = 0b01
+    LAYER2      = 0b10
+    LAYER1      = 0b11
+
+class BITRATE:
+    FREE        = 0b0000
+    BAD         = 0b1111
+
+class SAMPLERATE:
+    RESERVED    = 0b11
+
+class CHANNELMODE:
+    STEREO      = 0b00
+    JOINTSTEREO = 0b01
+    DUALMONO    = 0b10
+    MONO        = 0b11
+
+class MP3FrameHeader(BigEndianStructure):
+    _fields_ = [
+                  ('frameSync',     c_uint, 11),
+                  ('mpegVersion',   c_uint, 2),
+                  ('layer',         c_uint, 2),
+                  ('protectionBit', c_uint, 1),
+                  ('bitRate',       c_uint, 4),
+                  ('sampleRate',    c_uint, 2),
+                  ('paddingBit',    c_uint, 1),
+                  ('privateBit',    c_uint, 1),
+                  ('channelMode',   c_uint, 2),
+                  ('modeExt',       c_uint, 2),
+                  ('copyright',     c_uint, 1),
+                  ('original',      c_uint, 1),
+                  ('emphasis',      c_uint, 2)
+                  ]
+
+class MP3Writer(AudioWriter):
+    __slots__  = [ '_warnings', '_chunkBuffer', '_delayWrite', '_writeVBRHeader', '_totalFrameLength' ]
+    __slots__ += [ '_frameOffsets', '_isVBR', '_hasVBRHeader', '_firstBitRate' ]
+    __slots__ += [ '_mpegVersion', '_sampleRate', '_channelMode', '_firstFrameHeader' ]
+
+    def __init__(self, path, warnings):
+        super(MP3Writer, self).__init__(path)
+        self._warnings = warnings
+        self._delayWrite = True
+
+        self._chunkBuffer = []
+        self._frameOffsets = []
+
+        self._isVBR = self._hasVBRHeader = self._writeVBRHeader = False
+        self._firstBitRate = 0
+        self._totalFrameLength = 0
+        self._mpegVersion = self._sampleRate = self._channelMode = self._firstFrameHeader = 0
+
+    def WriteChunk(self, chunk, timeStamp=None):
+        self._chunkBuffer.append(chunk)
+        self.ParseMP3Frames(chunk)
+
+        if self._delayWrite and (self._totalFrameLength >= 65536):
+            self._delayWrite = False
+        if not self._delayWrite:
+            self.Flush()
+
+    def Finish(self):
+        self.Flush()
+
+        if self._writeVBRHeader:
+            self.Seek(0)
+            self.WriteVBRHeader(False)
+        self.Close()
+
+    def Flush(self):
+        for chunk in self._chunkBuffer:
+            self.Write(chunk)
+        self._chunkBuffer = []
+
+    def ParseMP3Frames(self, buff):
+        offset = 0
+        length = len(buff)
+
+        while length >= 4:
+            hdr = MP3FrameHeader.from_buffer_copy(buff, offset)
+
+            if hdr.frameSync != 0b11111111111:
+                print 'Invalid framesync', bin(hdr.frameSync)
+                break
+
+            if hdr.mpegVersion == MPEGVersion.RESERVED \
+                or hdr.layer != LAYER.LAYER3 \
+                or hdr.bitRate in (BITRATE.FREE, BITRATE.BAD) \
+                or hdr.sampleRate == SAMPLERATE.RESERVED:
+                print 'Invalid frame values'
+                break
+
+            bitRate = (MPEG1BitRate[hdr.bitRate] if (hdr.mpegVersion == MPEGVersion.MPEG1) else MPEG2XBitRate[hdr.bitRate]) * 1000
+            if hdr.mpegVersion == MPEGVersion.MPEG1:
+                sampleRate = MPEG1SampleRate[hdr.sampleRate]
+            elif hdr.mpegVersion == MPEGVersion.MPEG2:
+                sampleRate = MPEG20SampleRate[hdr.sampleRate]
+            else:
+                sampleRate = MPEG25SampleRate[hdr.sampleRate]
+
+            frameLen = self.GetFrameLength(hdr.mpegVersion, bitRate, sampleRate, hdr.paddingBit)
+            if frameLen > length:
+                break
+
+            isVBRHeaderFrame = False
+            if len(self._frameOffsets) == 0:
+                o = offset + self.GetFrameDataOffset(hdr.mpegVersion, hdr.channelMode)
+                if buff[o:o + 4] == 'Xing':
+                    isVBRHeaderFrame = True
+                    self._delayWrite = False
+                    self._hasVBRHeader = True
+
+            if isVBRHeaderFrame:
+                pass
+            elif self._firstBitRate == 0:
+                self._firstBitRate = bitRate
+                self._mpegVersion = hdr.mpegVersion
+                self._sampleRate = sampleRate
+                self._channelMode = hdr.channelMode
+                self._firstFrameHeader = BitConverterBE.ToUInt32(buff, offset)
+            elif not self._isVBR and (bitRate != self._firstBitRate):
+                self._isVBR = True
+                if self._hasVBRHeader:
+                    pass
+                elif self._delayWrite:
+                    self.WriteVBRHeader(True)
+                    self._writeVBRHeader = True
+                    self._delayWrite = False
+                else:
+                    self._warnings.append('Detected VBR too late, cannot add VBR header')
+
+            self._frameOffsets.append(self._totalFrameLength + offset)
+
+            offset += frameLen
+            length -= frameLen
+        self._totalFrameLength += len(buff)
+
+    def WriteVBRHeader(self, isPlaceholder):
+        buff = bytearray(self.GetFrameLength(self._mpegVersion, 64000, self._sampleRate, 0))
+        if not isPlaceholder:
+            header = self._firstFrameHeader
+            dataOffset = self.GetFrameDataOffset(self._mpegVersion, self._channelMode)
+            header &= 0xffff0dff    # Clear bitrate and padding fields
+            header |= 0x00010000    # Set protection bit (indicates that CRC is NOT present)
+            header |= (5 if self._mpegVersion == MPEGVersion.MPEG1 else 8) << 12 # 64 kbit/sec
+
+            pos = 0                 ; buff[pos:pos + 4] = BitConverterBE.FromUInt32(header)
+
+            pos = dataOffset        ; buff[pos:pos + 4] = 'Xing'
+            pos = dataOffset + 4    ; buff[pos:pos + 4] = BitConverterBE.FromUInt32(0x7) # Flags
+            pos = dataOffset + 8    ; buff[pos:pos + 4] = BitConverterBE.FromUInt32(len(self._frameOffsets))    # Frame count
+            pos = dataOffset + 12   ; buff[pos:pos + 4] = BitConverterBE.FromUInt32(self._totalFrameLength)     # File Length 
+
+            for i in xrange(100):
+                frameIndex = int((i / 100.0) * len(self._frameOffsets))
+                buff[dataOffset + 16 + i] = (self._frameOffsets[frameIndex] / float(self._totalFrameLength) * 250)
+        self.Write(buff)
+
+    @staticmethod
+    def GetFrameLength(mpegVersion, bitRate, sampleRate, padding):
+        return ((144 if (mpegVersion == MPEGVersion.MPEG1) else 72) * bitRate / sampleRate) + padding
+
+    @staticmethod
+    def GetFrameDataOffset(mpegVersion, channelMode):
+        if mpegVersion == MPEGVersion.MPEG1:
+            o = 17 if (channelMode == CHANNELMODE.MONO) else 32
+        else:
+            o = 9 if (channelMode == CHANNELMODE.MONO) else 17
+        return o + 4
+
+
+############################
+### audio/speexwriter.py ###
+############################
+
+from ctypes import c_int
+
+class OggPacket(object):
+    __slots__ = [ 'GranulePosition', 'Data' ]
+
+    def __init__(self, gp=0, data=None):
+        self.GranulePosition = gp
+        self.Data = data
+
+class SpeexWriter(AudioWriter):
+    __slots__  = [ '_serialNumber' ]
+
+    _vendorString = 'FLV Extract'
+    _sampleRate = 16000
+    _msPerFrame = 20
+    _samplesPerFrame = _sampleRate / (1000 / _msPerFrame)
+    _targetPageDataSize = 4096
+
+    __slots__ += [ '_packetList', '_packetListDataSize' ]
+    __slots__ += ['_pageBuff', '_pageBuffOffset', '_pageSequenceNumber', '_granulePosition' ]
+    def __init__(self, path, serialNumber):
+        super(SpeexWriter, self).__init__(path)
+        self._serialNumber = serialNumber
+
+        self.Seek((28 + 80) + (28 + 8 + len(SpeexWriter._vendorString))) # Speex header + Vorbis comment
+        self._packetList = []
+        self._packetListDataSize = 0
+
+        # Header + max segment table + target data size + extra segment
+        self._pageBuff = bytearray(27 + 255 + SpeexWriter._targetPageDataSize + 254)
+
+        self._pageBuffOffset = 0
+        self._pageSequenceNumber = 2    # First audio packet
+        self._granulePosition = 0
+
+    _subModeSizes = [ 0, 43, 119, 160, 220, 300, 364, 492, 79 ]
+    _wideBandSizes = [ 0, 36, 112, 192, 352 ]
+    _inBandSignalSizes = [ 1, 1, 4, 4, 4, 4, 4, 4, 8, 8, 16, 16, 32, 32, 64, 64 ]
+
+    def WriteChunk(self, chunk, timeStamp=None):
+        frameStart = -1
+        frameEnd = 0
+        offset = c_int()
+        length = len(chunk) * 8
+
+        while (length - offset.value) >= 5:
+            x = BitHelper.ReadB(chunk, offset, 1)
+            if x != 0:
+                # wideband frame
+                x = BitHelper.ReadB(chunk, offset, 3)
+                if not 1 <= x <= 4: raise Exception
+                offset.value += SpeexWriter._wideBandSizes[x] - 4
+            else:
+                x = BitHelper.ReadB(chunk, offset, 4)
+                if 1 <= x <= 8:
+                    # narrowband frame
+                    if frameStart != -1:
+                        self.WriteFramePacket(chunk, frameStart, frameEnd)
+                    frameStart = frameEnd
+                    offset.value += SpeexWriter._subModeSizes[x] - 5
+                elif x == 15:
+                    # terminator
+                    break
+                elif x == 14:
+                    # in-band signal
+                    if (length - offset.value) < 4: raise Exception
+                    x = BitHelper.ReadB(chunk, offset, 4)
+                    offset.value += SpeexWriter._inBandSignalSizes[x]
+                elif x == 13:
+                    # custom in-band signal
+                    if (length - offset.value) < 5: raise Exception
+                    x = BitHelper.ReadB(chunk, offset, 5)
+                    offset.value += x * 8
+                else:
+                    raise Exception
+
+            frameEnd = offset.value
+
+        if offset.value > length: raise Exception
+
+        if frameStart != -1:
+            self.WriteFramePacket(chunk, frameStart, frameEnd)
+
+    def Finish(self):
+        self.WritePage()
+        self.FlushPage(True)
+        self.Seek(0)
+        self._pageSequenceNumber = 0
+        self._granulePosition = 0
+        self.WriteSpeexHeaderPacket()
+        self.WriteVorbisCommentPacket()
+        self.FlushPage(False)
+        self.Close()
+
+    def WriteFramePacket(self, data, startBit, endBit):
+        lengthBits = endBit - startBit
+        frame = BitHelper.CopyBlock(data, startBit, lengthBits)
+
+        if (lengthBits % 8) != 0:
+            frame[-1] |= 0xff >> ((lengthBits % 8) + 1) # padding
+
+        self.AddPacket(frame, SpeexWriter._samplesPerFrame, True)
+
+    def WriteSpeexHeaderPacket(self):
+        data = bytearray(80)
+
+        pos = 0         ; data[pos:pos + 8] = 'Speex   '    # speex_string
+        pos = 8         ; data[pos:pos + 7] = 'unknown'     # speex_version
+    
+        data[28] = 1    # speex_version_id
+        data[32] = 80   # header_size
+
+        pos = 36        ; data[pos:pos + 4] = BitConverterLE.FromUInt32(SpeexWriter._sampleRate)       # rate
+
+        data[40] = 1    # mode (e.g. narrowband, wideband)
+        data[44] = 4    # mode_bitstream_version
+        data[48] = 1    # nb_channels
+
+        pos = 52        ; data[pos:pos + 4] = BitConverterLE.FromUInt32(0xffffffff)                     # -1: bitrate
+        pos = 56        ; data[pos:pos + 4] = BitConverterLE.FromUInt32(SpeexWriter._samplesPerFrame)   # frame_size
+
+        data[60] = 0    # vbr
+        data[64] = 1    # frames_per_packet
+
+        self.AddPacket(data, 0, False)
+
+    def WriteVorbisCommentPacket(self):
+        length = len(SpeexWriter._vendorString)
+        data = bytearray(8 + length)
+        data[0] = length
+
+        pos = 4         ; data[pos:pos + length] = SpeexWriter._vendorString
+
+        self.AddPacket(data, 0, False)
+
+    def AddPacket(self, data, sampleLength, delayWrite):
+        length = len(data)
+        if length >= 255:
+            raise Exception('Packet exceeds maximum size')
+
+        self._granulePosition += sampleLength
+
+        self._packetList.append(OggPacket(self._granulePosition, data))
+        self._packetListDataSize += length
+
+        if not delayWrite or (self._packetListDataSize >= self._targetPageDataSize) or (len(self._packetList) == 255):
+            self.WritePage()
+
+    def WritePage(self):
+        numPackets = len(self._packetList)
+        if numPackets == 0: return
+        self.FlushPage(False)
+        self.WriteToPage('OggS', 0, 4)
+
+        self.WriteToPageUInt8(0)                                                    # Stream structure version
+        self.WriteToPageUInt8(0x02 if (self._pageSequenceNumber == 0) else 0)       # Page flags
+        self.WriteToPageUInt64(self._packetList[-1].GranulePosition)                # Position in samples
+        self.WriteToPageUInt32(self._serialNumber)                                  # Stream serial number
+        self.WriteToPageUInt32(self._pageSequenceNumber)                            # Page sequence number
+        self.WriteToPageUInt32(0)                                                   # Checksum
+        self.WriteToPageUInt8(numPackets)                                           # Page segment count
+
+        for packet in self._packetList:
+            self.WriteToPageUInt8(len(packet.Data))
+
+        for packet in self._packetList:
+            self.WriteToPage(packet.Data, 0, len(packet.Data))
+
+        self._packetList = []
+        self._packetListDataSize = 0
+        self._pageSequenceNumber += 1
+
+    def FlushPage(self, isLastPage):
+        if self._pageBuffOffset == 0: return
+
+        if isLastPage:
+            self._pageBuff[5] |= 0x04
+
+        crc = OggCRC.Calculate(self._pageBuff, 0, self._pageBuffOffset)
+        pos = 22        ; self._pageBuff[pos:pos + 4] = BitConverterLE.FromUInt32(crc)
+        self.Write(self._pageBuff, 0, self._pageBuffOffset)
+        self._pageBuffOffset = 0
+
+    def WriteToPage(self, data, offset, length):
+        self._pageBuff[self._pageBuffOffset:self._pageBuffOffset + length] = data[offset:offset + length]
+        self._pageBuffOffset += length
+
+    def WriteToPageUInt8(self, value):
+        self.WriteToPage(chr(value), 0, 1)
+
+    def WriteToPageUInt32(self, value):
+        self.WriteToPage(BitConverterLE.FromUInt32(value), 0, 4)
+
+    def WriteToPageUInt64(self, value):
+        self.WriteToPage(BitConverterLE.FromUInt64(value), 0, 8)
+
+
+##########################
+### audio/wavwriter.py ###
+##########################
+
+class WAVWriter(AudioWriter):
+    __slots__  = [ 'blockAlign', '_bitsPerSample', '_channelCount', '_sampleRate', '_blockAlign' ]
+    __slots__ += [ '_sampleLen', '_finalSampleLen', '_wroteHeaders' ]
+
+    def __init__(self, path, bitsPerSample, channelCount, sampleRate):
+        super(WAVWriter, self).__init__(path)
+
+        self.blockAlign = (bitsPerSample / 8) * channelCount
+
+        # WAVTools.WAVWriter
+        self._bitsPerSample = bitsPerSample
+        self._channelCount = channelCount
+        self._sampleRate = sampleRate
+        self._blockAlign = self._channelCount * ((self._bitsPerSample + 7) / 8)
+
+        self._sampleLen = self._finalSampleLen = 0
+        self._wroteHeaders = False
+
+    def WriteChunk(self, chunk, timeStamp=None):
+        self.WriteSamples(chunk, len(chunk) / self.blockAlign)
+
+    def WriteHeaders(self):
+        dataChunkSize = self.GetDataChunkSize(self._finalSampleLen)
+
+        self.WriteFourCC('RIFF')
+        self.Write(BitConverterLE.FromUInt32(dataChunkSize + (dataChunkSize & 1) + 36))
+        self.WriteFourCC('WAVE')
+        self.WriteFourCC('fmt ')
+        self.Write(BitConverterLE.FromUInt32(16))
+        self.Write(BitConverterLE.FromUInt16(1))
+        self.Write(BitConverterLE.FromUInt16(self._channelCount))
+        self.Write(BitConverterLE.FromUInt32(self._sampleRate))
+        self.Write(BitConverterLE.FromUInt32(self._sampleRate * self._blockAlign))
+        self.Write(BitConverterLE.FromUInt16(self._blockAlign))
+        self.Write(BitConverterLE.FromUInt16(self._bitsPerSample))
+        self.WriteFourCC('data')
+        self.Write(BitConverterLE.FromUInt32(dataChunkSize))
+
+    def GetDataChunkSize(self, sampleCount):
+        maxFileSize = 0x7ffffffe
+
+        dataSize = sampleCount * self._blockAlign
+        if (dataSize + 44) > maxFileSize:
+            dataSize = ((maxFileSize - 44) / self._blockAlign) * self._blockAlign
+        return dataSize
+
+    def Finish(self):
+        if ((self._sampleLen * self._blockAlign) & 1) == 1:
+            self.Write('\x00')
+
+        if self._sampleLen != self._finalSampleLen:
+            dataChunkSize = self.GetDataChunkSize(self._sampleLen)
+            self.Seek(4)
+            self.Write(BitConverterLE.FromUInt32(dataChunkSize + (dataChunkSize & 1) + 36))
+            self.Seek(40)
+            self.Write(BitConverterLE.FromUInt32(dataChunkSize))
+
+        self.Close()
+
+    def WriteSamples(self, buff, sampleCount):
+        if sampleCount <= 0: return
+
+        if not self._wroteHeaders:
+            self.WriteHeaders()
+            self._wroteHeaders = True
+
+        self.Write(buff, 0, sampleCount * self._blockAlign)
+        self._sampleLen += sampleCount

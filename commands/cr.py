@@ -1,164 +1,197 @@
-from twisted.internet import reactor
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 from twisted.internet.defer import inlineCallbacks
-from twisted.internet.protocol import ClientCreator
-from twisted.internet.utils import getProcessOutputAndValue
-from twisted.protocols.ftp import FTPClient
-from twisted.web.client import Agent, CookieAgent, FileBodyProducer
-from twisted.web.http_headers import Headers
-
-from lib.crunchy import Decoder, player_revision, qualities, xml_url, swf_url
-from lib.flv import FLVFile
-from lib.utils import getPath, returnBody
-
-from StringIO import StringIO
-from bs4 import BeautifulSoup
-
-import os, uuid, urllib, cookielib, shutil, codecs
+from lib.utils import dt2ts
+import datetime
 
 config = {
     "access": "admin",
-    "help": ".cr [contents] [quality] [episode URL] || .cr both 1080 http://crunchyroll.com/shit-anime-season-two/ep11 || Rips video and/or subs from CR",
+    "help": ".cr [subcommand] ... || .cr help || Everything Crunchyroll (use .cr help for more)",
     "reversible": False
 }
 
+def spliceContents(video, subs):
+    if video and subs:
+        return "video and subs"
+    elif video:
+        return "video"
+    elif subs:
+        return "subs"
+    else:
+        return "nothing"
+
 @inlineCallbacks
 def command(self, user, channel, msg):
-    if len(msg) < 3:
-        self.msg(channel, "Requires contents (subs, video or both), a quality (360, 480, 720 or 1080), and a URL")
+    if not msg:
+        self.msg(channel, config["help"])
         return
 
-    # Step 1: Download the XML meta-data
-    content, quality, video_page = msg[0], msg[1], " ".join(msg[2:])
-    guid = uuid.uuid4().hex
-    while os.path.exists(guid):
-        guid = uuid.uuid4().hex
-    os.mkdir(guid)
+    subcommands = ("rip", "autorip", "list", "info", "config", "reload", "login")
+    command = msg[0].lower()
 
-    if content not in ("subs", "video", "both"):
-        self.msg(channel, "Invalid content, must be one of: subs, video, both")
-    if quality not in qual:
-        self.msg(channel, "Invalid quality, must be one of: {}".format(", ".join(qual.keys())))
+    if command not in subcommands:
+        self.msg(channel, "Available subcommands are: {}. Use .cr [subcommand] for their use".format(", ".join(subcommands)))
         return
 
-    stream = {}
-    format = qualities[quality]
-    vid_id = video_page.split("-")[-1]
-    upload_subs = content in ("subs", "both")
-    upload_video = content in ("video", "both")
-
-    url = 'https://www.crunchyroll.com/?a=formhandler'
-    playlist = xml_url.format(vid_id, format[0], format[1])
-    headers = Headers({
-        'Content-Type': ['application/x-www-form-urlencoded'],
-        'Referer': ['https://www.crunchyroll.com'],
-        'User-Agent': ['Mozilla/5.0 (Macintosh; Intel Mac OS X 10.8; rv:17.0) Gecko/17.0 Firefox/17.0']
-    })
-    login_data = FileBodyProducer(StringIO(urllib.urlencode({
-        'formname': 'RpcApiUser_Login',
-        'next_url': '',
-        'fail_url': '/login',
-        'name': self.factory.config.cr_user,
-        'password': self.factory.config.cr_pass
-    })))
-    video_data = FileBodyProducer(StringIO(urllib.urlencode({
-        'current_page': video_page
-    })))
-
-    self.notice(user, "Logging in to Crunchyroll")
-    agent = CookieAgent(Agent(reactor), cookielib.CookieJar())
-    response = yield agent.request("POST", url, headers, login_data)
-    response = yield agent.request("POST", playlist, headers, video_data)
-    xmlSource = yield returnBody(response)
-
-    # Step 2: Parse the XML
-    self.notice(user, "Parsing response")
-    soup = BeautifulSoup(xmlSource)
-    player_url = soup.find('default:chromelessplayerurl').string
-    stream_info = soup.find('stream_info')
-    showinfo = soup.find('media_metadata')
-    vidinfo = soup.find('metadata')
-    subtitles = soup.find('subtitles')
-
-    if not stream_info:
-        self.msg(channel, "Failed to rip {}".format(video_page))
-        return
-
-    if showinfo:
-        filename = "{0} - {1:02d} [{2}p] [CR]".format(showinfo.series_title.string, int(showinfo.episode_number.string), vidinfo.height.string)
-    else:
-        filename = vid_id
-
-    stream['url'] = stream_info.host.string
-    stream['token'] = stream_info.token.string
-    stream['file'] = stream_info.file.string
-    stream['swf_url'] = swf_url+player_revision+"/"+player_url
-
-    # Step 3: Extract the subs
-    if upload_subs:
-        if not subtitles:
-            self.msg(channel, "Couldn't find subtitles for {}".format(video_page))
-            return
-        self.notice(user, "Extracting subtitles")
-        formattedSubs = Decoder(xmlSource).fancy
-        with open(os.path.join(guid, filename + ".ass"), 'wb') as subfile:
-            subfile.write(codecs.BOM_UTF8)
-            subfile.write(formattedSubs.encode('utf-8'))
-
-    # Step 4: Download the FLV and re-mux to MKV
-    if upload_video:
-        self.notice(user, "Downloading video")
-        rtmpargs = ["-e", "-r", stream['url'], "-y", stream['file'], "-W", stream['swf_url'], "-T", stream['token'], "-o", os.path.join(guid, filename + '.flv')]
-        mkvmergeargs = ["-o", os.path.join(guid, filename+".mkv"),
-            "--forced-track","0:yes","--compression","0:none","--timecodes","0:"+os.path.join(guid, filename+".txt"),"-d","0","-A","-S",os.path.join(guid, filename+".264"),
-            "--forced-track","0:yes","-a","0","-D","-S",os.path.join(guid, filename + ".aac")]
-
-        retries = 15
-        out, err, code = yield getProcessOutputAndValue(getPath("rtmpdump"), args=rtmpargs, env=os.environ)
-        while code == 2 and retries:
-            retries -= 1
-            self.notice(user, "rtmpdump failed in a resumable way, trying again. ({:d} retries left)".format(retries))
-            out, err, code = yield getProcessOutputAndValue(getPath("rtmpdump"), args=rtmpargs, env=os.environ)
-        if code != 0:
-            self.msg(channel, "Failed to download FLV for {}".format(video_page))
-            print "CODE: {:d}\nOUT: {}\nERR: {}\n".format(code, out, err)
+    if command == "rip":
+        if len(msg) < 5:
+            self.msg(channel, ".cr rip [contents] [quality] [episode] [series] || Contents is subs, video or both. Quality is 360, 480, 720, or 1080. Series uses CR's naming")
             return
 
-        self.notice(user, "Remuxing video")
+        contents, quality, episode, series = msg[1], msg[2], msg[3], " ".join(msg[4:])
+        success, series = self.factory.crunchy.resolve(series)
+
+        if contents not in ("subs","video","both"):
+            self.msg(channel, "Invalid content, must be subs, video or both")
+
+        if quality not in ("360", "480", "720", "1080"):
+            self.msg(channel, "Invalid quality, must be 360, 480, 720, or 1080")
+            return
+
         try:
-            FLVFile(os.path.join(guid, filename + ".flv")).ExtractStreams(True, True, True, True)
+            episode = int(episode)
         except:
-            self.msg(channel, "Failed to extract video and audio streams for {}".format(video_page))
-            raise
-
-        out, err, code = yield getProcessOutputAndValue(getPath("mkvmerge"), args=mkvmergeargs, env=os.environ)
-        if code == 2:
-            self.msg(channel, "Failed to mux MKV for {}".format(video_page))
-            print "CODE: {:d}\nOUT: {}\nERR: {}\n".format(code, out, err)
+            self.msg(channel, "Invalid episode number, must be an integer")
             return
 
-    # Step 5: Upload it
-    self.notice(user, "Uploading files")
-    ftp = yield ClientCreator(reactor, FTPClient, self.factory.config.ftp_user, self.factory.config.ftp_pass).connectTCP(self.factory.config.ftp_host, self.factory.config.ftp_port)
-    ftp.changeDirectory(self.factory.config.ftp_encode_dir)
+        if not success:
+            self.msg(channel, series)
+            return
 
-    if upload_subs:
-        store, finish = ftp.storeFile(filename+".ass")
-        sender = yield store
-        with open("{}/{}.ass".format(guid, filename), "rb") as f:
-            sender.transport.write(f.read())
-        sender.finish()
-        yield finish
+        key = "{:02d}".format(episode)
+        if key not in self.factory.crunchy.data["shows"][series]:
+            self.msg(channel, "No data for that episode, try again when CR has added it")
+            return
 
-    if upload_video:
-        store, finish = ftp.storeFile(filename+".mkv")
-        sender = yield store
-        with open("{}/{}.mkv".format(guid, filename), "rb") as f:
-            sender.transport.write(f.read())
-        sender.finish()
-        yield finish
+        show = self.factory.crunchy.data["shows"][series][key]
+        subs = contents in ("subs", "both")
+        video = contents in ("video", "both")
+        success = yield self.factory.crunchy.rip(show, quality, video, subs, lambda x: self.notice(user, x))
+        self.msg(channel, "Ripping of {} {:02d} [{}p] was {}".format(series, episode, quality, "successful" if success else "unsuccessful"))
 
-    # Step 6: Clean up
-    self.msg(channel, "Finished ripping {}".format(video_page))
-    yield ftp.quit()
-    ftp.fail(None)
-    shutil.rmtree(guid, True)
+    elif command == "autorip":
+        if len(msg) < 4:
+            self.msg(channel, ".cr autorip [contents] [quality] [series] || Contents is subs, video or both. Quality is 360, 480, 720, or 1080. Series uses CR's naming")
+            return
+
+        contents, quality, series = msg[1], msg[2], " ".join(msg[3:])
+        success, series = self.factory.crunchy.resolve(series)
+
+        if contents not in ("subs","video","both"):
+            self.msg(channel, "Invalid content, must be subs, video or both")
+
+        if quality not in ("360", "480", "720", "1080"):
+            self.msg(channel, "Invalid quality, must be 360, 480, 720, or 1080")
+            return
+
+        if not success:
+            self.msg(channel, series)
+            return
+
+        subs = contents in ("subs", "both")
+        video = contents in ("video", "both")
+        self.factory.crunchy.data["auto_downloads"][series] = {
+            "quality": quality,
+            "video": video,
+            "subs": subs,
+            "downloaded": self.factory.crunchy.data["shows"][series].keys()
+        }
+
+        contents = spliceContents(video, subs)
+        self.msg(channel, "Set {} to autorip {} at {}p. You won't really know if it works though. ┐(￣ー￣)┌".format(series, contents, quality))
+
+    elif command == "list":
+        if len(msg) < 2:
+            self.msg(channel, ".cr list series || .cr list episodes [series] || .cr list autodownloads || Either lists known series, or known episodes for a series. Series uses CR's naming")
+            return
+
+        subcommand = msg[1].lower()
+
+        if subcommand == "series":
+            self.msg(channel, ", ".join(sorted(self.factory.crunchy.data["shows"].keys())))
+
+        elif subcommand == "episodes":
+            if len(msg) < 3:
+                self.msg(channel, ".cr list episodes [series] || You forgot the series name, try again.")
+                return
+
+            series = " ".join(msg[2:])
+            success, series = self.factory.crunchy.resolve(series)
+
+            if not success:
+                self.msg(channel, series)
+                return
+
+            self.msg(channel, ", ".join(sorted(self.factory.crunchy.data["shows"][series].keys())))
+
+        elif subcommand == "autodownloads":
+            data = self.factory.crunchy.data["auto_downloads"]
+            self.msg(channel, ", ".join(["{} for {} at {}p".format(spliceContents(data[k]["video"], data[k]["subs"]), k, data[k]["quality"]) for k in sorted(data.keys())]))
+
+        else:
+            self.msg(channel, ".cr list series || .cr list episodes [series] || .cr list autodownloads || Those are your only three options, stop trying to be a special snowflake.")
+
+    elif command == "info":
+        if len(msg) < 3:
+            self.msg(channel, ".cr info [episode] [series] || Gives you data on an episode. Series uses CR's naming")
+            return
+
+        episode, series = msg[1], " ".join(msg[2:])
+        success, series = self.factory.crunchy.resolve(series)
+
+        try:
+            episode = int(episode)
+        except:
+            self.msg(channel, "Invalid episode number, must be an integer")
+            return
+
+        if not success:
+            self.msg(channel, series)
+            return
+
+        key = "{:02d}".format(episode)
+        if key not in self.factory.crunchy.data["shows"][series]:
+            self.msg(channel, "No data for that episode, try again when CR has added it")
+            return
+
+        data = self.factory.crunchy.data["shows"][series][key]
+
+        now = datetime.datetime.utcnow()
+        airtime = datetime.datetime.utcfromtimestamp(data["airtime"])
+        if now > airtime:
+            airing = "aired {} ago".format(dt2ts(now - airtime))
+        else:
+            airing = "airs in {}".format(dt2ts(airtime - now))
+
+        self.msg(channel, "{} {:02d}, \"{}\", {} with a duration of {}. CR ID = {}.".format(series, episode, data["title"], airing, data["duration"], data["media_id"]))
+
+    elif command == "config":
+        if len(msg) < 2:
+            self.msg(channel, ".cr config save || .cr config load || Saves or loads the config file")
+            return
+
+        subcommand = msg[1].lower()
+
+        if subcommand == "load":
+            self.factory.crunchy.load()
+            self.msg(channel, "CR config loaded")
+
+        elif subcommand == "save":
+            self.factory.crunchy.save()
+            self.msg(channel, "CR config saved")
+
+        else:
+            self.msg(channel, ".cr config save || .cr config load || Is it really that hard?")
+
+    elif command == "reload":
+        self.notice(user, "Starting caching")
+        yield self.factory.crunchy.cache()
+        self.msg(channel, "Crunchyroll data reloaded")
+
+    elif command == "login":
+        yield self.factory.crunchy.login()
+        self.msg(channel, "Logged in to Crunchyroll")
+
+    else:
+        self.msg(channel, "ERROR 634: How the fuck did this happen?")
