@@ -4,10 +4,9 @@ from bs4 import UnicodeDammit
 import json, random
 
 class Markov(object):
-    def __init__(self, db, aliases, order=3):
+    def __init__(self, db, aliases):
         self.db = db
         self.aliases = aliases
-        self.order = order
         self.users = {}
         self.ranking = {}
         self.loadUsers()
@@ -32,26 +31,21 @@ class Markov(object):
             }
     
     @inlineCallbacks
-    def learn(self, name, phrase):
+    def learn(self, name, phrase, channel):
         name = self.aliases.resolve(name)
         if name not in self.users:
             self.users[name] = True
 
-        order = -1 * (self.order - 1)
         if "password" in phrase:
             return
         phrase = phrase.split(" ")
         phrase = filter(lambda x: x and "http" not in x and "ftp:" not in x and x[0] != ".", phrase)
 
         for i in range(len(phrase) + 1):
-            seed = UnicodeDammit.detwingle(" ".join(phrase[:i][order:]))
-            small = UnicodeDammit.detwingle(phrase[i-1] if i > 0 else "")
+            seed = UnicodeDammit.detwingle(phrase[i-1] if i > 0 else "")
             answer = UnicodeDammit.detwingle(phrase[i] if i < len(phrase) else "")
 
-            yield self.db.runQuery("INSERT INTO parts(name, seed, answer) VALUES(%s, %s, %s)", (name, seed, answer))
-
-            if small != seed:
-                yield self.db.runQuery("INSERT INTO parts(name, seed, answer) VALUES(%s, %s, %s)", (name, small, answer))
+            yield self.db.runQuery("INSERT INTO parts(name, seed, answer, source) VALUES(%s, %s, %s, %s)", (name, seed, answer, channel))
 
     @inlineCallbacks
     def ramble(self, name=None, seed=""):
@@ -85,19 +79,21 @@ class Markov(object):
     @inlineCallbacks
     def prev(self, name, seed):
         if name:
-            result = yield self.db.runQuery('SELECT seed FROM parts WHERE name = %s AND answer = %s AND seed NOT LIKE "%% %%" ORDER BY RAND() LIMIT 1', (name, seed))
+            result = yield self.db.runQuery('SELECT seed FROM parts WHERE name = %s AND answer = %s', (name, seed))
         else:
-            result = yield self.db.runQuery('SELECT seed FROM parts WHERE answer = %s AND seed NOT LIKE "%% %%" ORDER BY RAND() LIMIT 1', (seed, ))
+            result = yield self.db.runQuery('SELECT seed FROM parts WHERE answer = %s', (seed, ))
         if not result:
             returnValue("")
-        returnValue(result[0][0])
+        row = random.randint(0, len(result) - 1)
+        returnValue(result[row][0])
 
     @inlineCallbacks
     def next(self, name, seed):
         if name:
-            result = yield self.db.runQuery("SELECT answer FROM parts WHERE name = %s AND seed = %s ORDER BY RAND() LIMIT 1", (name, seed))
+            result = yield self.db.runQuery("SELECT answer FROM parts WHERE name = %s AND seed = %s", (name, seed))
         else:
-            result = yield self.db.runQuery("SELECT answer FROM parts WHERE seed = %s ORDER BY RAND() LIMIT 1", (seed, ))
+            result = yield self.db.runQuery("SELECT answer FROM parts WHERE seed = %s", (seed, ))
         if not result:
             returnValue("")
-        returnValue(result[0][0])
+        row = random.randint(0, len(result) - 1)
+        returnValue(result[row][0])

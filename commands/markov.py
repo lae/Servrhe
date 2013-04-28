@@ -34,8 +34,7 @@ def command(self, user, channel, msg):
         if cooldowns[user]["warnings"] >= 5 or cooldowns[user]["kicks"] >= 10:
             cooldowns[user]["warnings"] = 0
             cooldowns[user]["kicks"] = 0
-            self.mode(channel, True, "b", mask=user+"!*@*")
-            self.kick(channel, user, "Markov command abuse")
+            self.kickban(channel, user, "Markov command abuse")
         elif cooldowns[user]["warnings"] >= 3:
             cooldowns[user]["kicks"] += 1
             self.kick(channel, user, "Markov command abuse")

@@ -12,7 +12,7 @@ from lib.crunchy import Crunchyroll
 from lib.funi import Funimation
 from lib.markov import Markov
 from lib.utils import log, fetchPage, normalize
-import urllib, json, datetime
+import urllib, json, datetime, random
 
 class Servrhe(irc.IRCClient):
     nickname = "ServrheV3"
@@ -40,6 +40,8 @@ class Servrhe(irc.IRCClient):
         permissions = ["public"]
         if user.lower() in self.admins and self.admins[user.lower()]:
             permissions.append("admin")
+            if user.lower() in ("fugiman","rhexcelion"):
+                permissions.append("superadmin")
             if user.lower() == "fugiman":
                 permissions.append("owner")
         return permissions
@@ -60,9 +62,19 @@ class Servrhe(irc.IRCClient):
     def privmsg(self, hostmask, channel, msg):
         user = hostmask.split("!", 1)[0]
         channel = channel if channel != self.nickname else user
+        if self.factory.config.mad and "rhe" in msg.lower():
+            shutup = "SHUT UP {}".format(user.upper())
+            luck = random.randint(0,9)
+            if luck == 0:
+                self.kickban(channel, user, shutup)
+            elif luck < 3:
+                self.kick(channel, user, shutup)
+            else:
+                self.msg(channel, shutup)
+            return
         if not msg.startswith("."): # not a trigger command
             alias = self.factory.alias.resolve(user)
-            self.factory.markov.learn(alias, msg)
+            self.factory.markov.learn(alias, msg, channel)
             return # do nothing
         command, sep, rest = msg.lstrip(".").partition(" ")
         command, msg, reverse = command.lower(), filter(lambda x: x, rest.split(" ")), False
@@ -80,6 +92,8 @@ class Servrhe(irc.IRCClient):
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg, reverse)
         else:
             alias = self.factory.alias.resolve(command)
+            if alias in ("c","k","kb","sync","op","deop","protect","deprotect","ban","unban"):
+                return
             if alias in self.factory.markov.users and "markov" in self.factory.pluginmanager.plugins:
                 msg = [alias] + msg
                 self.factory.pluginmanager.plugins["markov"]["command"](self, user, channel, msg)
@@ -89,6 +103,12 @@ class Servrhe(irc.IRCClient):
 
     def notice(self, user, message):
         irc.IRCClient.notice(self, user, normalize(message))
+
+    def kickban(self, channel, user, reason=None):
+        if not reason:
+            reason = user
+        self.mode(channel, True, "b", mask=user+"!*@*")
+        self.kick(channel, user, reason)
 
     def userJoined(self, user, channel):
         if channel.lower() == "#commie-staff":
@@ -146,6 +166,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "channels": ["#commie-subs","#commie-staff"],
             "notifies": {},
             "premux_dir": "",
+            "mad": False,
             # Release config
             "rip_host": "",
             "cr_user": "",
@@ -194,8 +215,8 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         self.db = adbapi.ConnectionPool(self.config.db_library, host=self.config.db_host, port=self.config.db_port, db=self.config.db_database, user=self.config.db_user, passwd=self.config.db_pass, cp_reconnect=True)
         self.alias = Aliases("alias.json")
         self.markov = Markov(self.db, self.alias)
-        self.crunchy = Crunchyroll("crunchyroll.json", self.config)
-        self.funi = Funimation("funimation.json", self.config)
+        self.crunchy = Crunchyroll("crunchyroll.json", self.config, self.broadcast)
+        self.funi = Funimation("funimation.json", self.config, self.broadcast)
         reactor.addSystemEventTrigger("before", "shutdown", self.shutdown)
         t = task.LoopingCall(self.refresh_shows)
         t.start(5*60) # 5 minutes
@@ -298,6 +319,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
         self.config.save()
         self.alias.save()
         self.funi.save()
+        self.crunchy.save()
     
 if __name__ == "__main__":
     factory = ServrheFactory()

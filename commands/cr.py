@@ -3,6 +3,7 @@
 
 from twisted.internet.defer import inlineCallbacks
 from lib.utils import dt2ts
+from lib.crunchy import spliceContents
 import datetime
 
 config = {
@@ -10,16 +11,6 @@ config = {
     "help": ".cr [subcommand] ... || .cr help || Everything Crunchyroll (use .cr help for more)",
     "reversible": False
 }
-
-def spliceContents(video, subs):
-    if video and subs:
-        return "video and subs"
-    elif video:
-        return "video"
-    elif subs:
-        return "subs"
-    else:
-        return "nothing"
 
 @inlineCallbacks
 def command(self, user, channel, msg):
@@ -68,7 +59,7 @@ def command(self, user, channel, msg):
         subs = contents in ("subs", "both")
         video = contents in ("video", "both")
         success = yield self.factory.crunchy.rip(show, quality, video, subs, lambda x: self.notice(user, x))
-        self.msg(channel, "Ripping of {} {:02d} [{}p] was {}".format(series, episode, quality, "successful" if success else "unsuccessful"))
+        self.msg(channel, "Ripping of {} {:02d} [{}p] was {}".format(series.encode("utf8"), episode, quality, "successful" if success else "unsuccessful"))
 
     elif command == "autorip":
         if len(msg) < 4:
@@ -99,7 +90,7 @@ def command(self, user, channel, msg):
         }
 
         contents = spliceContents(video, subs)
-        self.msg(channel, "Set {} to autorip {} at {}p. You won't really know if it works though. ┐(￣ー￣)┌".format(series, contents, quality))
+        self.msg(channel, "Set {} to autorip {} at {}p. You won't really know if it works though. ┐(￣ー￣)┌".format(series.encode("utf8"), contents, quality))
 
     elif command == "list":
         if len(msg) < 2:
@@ -164,7 +155,7 @@ def command(self, user, channel, msg):
         else:
             airing = "airs in {}".format(dt2ts(airtime - now))
 
-        self.msg(channel, "{} {:02d}, \"{}\", {} with a duration of {}. CR ID = {}.".format(series, episode, data["title"], airing, data["duration"], data["media_id"]))
+        self.msg(channel, "{} {:02d}, \"{}\", {} with a duration of {}. CR ID = {}.".format(series.encode("utf8"), episode, data["title"], airing, data["duration"], data["media_id"]))
 
     elif command == "config":
         if len(msg) < 2:

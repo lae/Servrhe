@@ -22,4 +22,4 @@ def command(self, user, channel, msg):
     if not shows:
         self.msg(channel, "No shows airing in the next 24 hours")
     for s in shows:
-        self.msg(channel, "%s airs in %s on %s" % (s[1], dt2ts(s[0]), s[2]))
+        self.msg(channel, "%s will finish airing in %s on %s" % (s[1], dt2ts(s[0]), s[2]))
