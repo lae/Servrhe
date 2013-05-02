@@ -9,7 +9,7 @@ from twisted.web.xmlrpc import Proxy
 from StringIO import StringIO
 from lib.multipart import MultiPartProducer
 from lib.torrent import makeTorrent
-from lib.utils import Downloader, cache, getPath, returnBody
+from lib.utils import Downloader, cache, getPath, returnBody, rheinbowify
 import uuid, os, fnmatch, shutil, binascii, cookielib, re, urllib
 
 config = {
@@ -141,9 +141,9 @@ def command(self, user, channel, msg):
     # Step 2: Create torrent
     try:
         torrent = makeTorrent(complete, guid)
-    except Exception, e:
+    except:
         self.msg(channel, "Aborted releasing {}: Couldn't create torrent.".format(show["series"]))
-        return
+        raise
     self.notice(user, "Created torrent")
 
     # Step 3: Upload episode to XDCC server
@@ -155,9 +155,11 @@ def command(self, user, channel, msg):
             sender.transport.write(f.read())
         sender.finish()
         yield finish
+        yield ftp.quit()
+        ftp.fail(None)
     except:
         self.msg(channel, "Aborted releasing {}: Couldn't upload completed episode to XDCC server.".format(show["series"]))
-        return
+        raise
     self.notice(user, "Uploaded to XDCC")
 
     # Step 4: Upload episode to seedbox
@@ -169,12 +171,30 @@ def command(self, user, channel, msg):
             sender.transport.write(f.read())
         sender.finish()
         yield finish
+        yield ftp.quit()
+        ftp.fail(None)
     except:
         self.msg(channel, "Aborted releasing {}: Couldn't upload completed episode to seedbox.".format(show["series"]))
-        return
+        raise
     self.notice(user, "Uploaded to seedbox")
 
-    # Step 5: Upload torrent to Nyaa
+    # Step 5: Start seeding torrent
+    try:
+        ftp = yield ClientCreator(reactor, FTPClient, self.factory.config.seed_user, self.factory.config.seed_pass).connectTCP(self.factory.config.seed_host, self.factory.config.seed_port)
+        store, finish = ftp.storeFile("./{}/{}".format(self.factory.config.seed_torrent_folder, torrent))
+        sender = yield store
+        with open("{}/{}".format(guid, torrent), "rb") as f:
+            sender.transport.write(f.read())
+        sender.finish()
+        yield finish
+        yield ftp.quit()
+        ftp.fail(None)
+    except:
+        self.msg(channel, "Aborted releasing {}: Couldn't upload torrent to seedbox.".format(show["series"]))
+        raise
+    self.notice(user, "Seeding started")
+
+    # Step 6: Upload torrent to Nyaa
     nyaagent = CookieAgent(Agent(reactor), cookielib.CookieJar())
     response = yield nyaagent.request("POST","http://www.nyaa.eu/?page=login",
         Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
@@ -182,20 +202,22 @@ def command(self, user, channel, msg):
     body = yield returnBody(response)
     if "Login successful" not in body:
         self.msg(channel, "Aborted releasing {}: Couldn't login to Nyaa.".format(show["series"]))
+        with open("{}/{}".format(guid, "nyaa_login.html"), "wb") as f:
+            f.write(body)
         return
-    response = yield nyaagent.request("POST","http://www.nyaa.eu/?page=upload",
-        Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
-        MultiPartProducer({"torrent": "{}/{}".format(guid, torrent)},{
-            "name": complete,
-            "catid": "1_37",
-            "info": "#commie-subs@irc.rizon.net",
-            "description": "Visit us at [url]http://commiesubs.com[/url] for the latest updates and news.\nFollow at [url]https://twitter.com/RHExcelion[/url].",
-            "remake": 0,
-            "anonymous": 0,
-            "hidden": 1,
-            "rules": 1,
-            "submit": "Upload"
-        }))
+    twitter_list = rheinbowify('Follow [url="https://twitter.com/RHExcelion"]@RHExcelion[/url], [url="https://twitter.com/johnnydickpants"]@jdp[/url], and the rest of Commie at [url="https://twitter.com/RHExcelion/commie-devs"]@Commie-Devs[/url].')
+    post_data = MultiPartProducer({"torrent": "{}/{}".format(guid, torrent)},{
+        "name": complete,
+        "catid": "1_37",
+        "info": "#commie-subs@irc.rizon.net",
+        "description": "Visit us at [url]http://commiesubs.com[/url] for the latest updates and news.\n{}".format(twitter_list),
+        "remake": "0",
+        "anonymous": "0",
+        "hidden": "0",
+        "rules": "1",
+        "submit": "Upload"
+    })
+    response = yield nyaagent.request("POST","http://www.nyaa.eu/?page=upload", Headers({'Content-Type': ['multipart/form-data; boundary={}'.format(post_data.boundary)]}), post_data)
     if response.code != 200:
         nyaa_codes = {
             418: "I'm a teapot (You're doing it wrong)",
@@ -209,17 +231,19 @@ def command(self, user, channel, msg):
         return
     self.notice(user, "Uploaded to Nyaa")
 
-    # Step 6: Get torrent link from Nyaa
+    # Step 7: Get torrent link from Nyaa
     body = yield returnBody(response)
     match = re.search("http://www.nyaa.eu/\?page=view&#38;tid=[0-9]+", body)
     if not match:
         self.msg(channel, "Aborted releasing {}: Couldn't find torrent link in Nyaa's response.".format(show["series"]))
+        with open("{}/{}".format(guid, "nyaa_submit.html"), "wb") as f:
+            f.write(body)
         return
     info_link = match.group(0).replace("&#38;","&")
     download_link = info_link.replace("view","download")
     self.notice(user, "Got Nyaa torrent link")
 
-    # Step 7: Upload torrent link to TT
+    # Step 8: Upload torrent link to TT
     ttagent = CookieAgent(Agent(reactor), cookielib.CookieJar())
     response = yield ttagent.request("POST","http://tokyotosho.info/login.php",
         Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
@@ -227,6 +251,8 @@ def command(self, user, channel, msg):
     body = yield returnBody(response)
     if "Logged in." not in body:
         self.msg(channel, "Couldn't login to TT. Continuing to release {} regardless.".format(show["series"]))
+        with open("{}/{}".format(guid, "tt_login.html"), "wb") as f:
+            f.write(body)
     else:
         response = yield ttagent.request("POST","http://tokyotosho.info/new.php",
             Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
@@ -239,10 +265,12 @@ def command(self, user, channel, msg):
         body = yield returnBody(response)
         if "Torrent Submitted" not in body:
             self.msg(channel, "Couldn't upload torrent to TT. Continuing to release {} regardless.".format(show["series"]))
+            with open("{}/{}".format(guid, "tt_submit.html"), "wb") as f:
+                f.write(body)
         else:
             self.notice(user, "Uploaded to TT")
 
-    # Step 8: Create blog post
+    # Step 9: Create blog post
     blog = Proxy("http://commiesubs.com/xmlrpc.php")
     try:
         yield blog.callRemote("wp.newPost",
@@ -261,26 +289,12 @@ def command(self, user, channel, msg):
     except:
         self.msg(channel, "Couldn't create blog post. Continuing to release {} regardless.".format(show["series"]))
 
-    # Step 9: Start seeding torrent
-    try:
-        ftp = yield ClientCreator(reactor, FTPClient, self.factory.config.seed_user, self.factory.config.seed_pass).connectTCP(self.factory.config.seed_host, self.factory.config.seed_port)
-        store, finish = ftp.storeFile("./{}/{}".format(self.factory.config.seed_torrent_folder, torrent))
-        sender = yield store
-        with open("{}/{}".format(guid, torrent), "rb") as f:
-            sender.transport.write(f.read())
-        sender.finish()
-        yield finish
-        self.notice(user, "Seeding started")
-    except:
-        self.msg(channel, "Couldn't start seeding the torrent. Continuing to release {} regardless.".format(show["series"]))
-    self.msg(channel, "%s is released." % show["series"])
-
     # Step 10: Mark show finished on showtimes
     data = yield self.factory.load("show","update", data={"id":show["id"],"method":"next_episode"})
     if "status" in data and not data["status"]:
         self.msg(channel, data["message"])
-        return
-    self.msg(channel, "%s is marked as completed for the week" % show["series"])
+    else:
+        self.msg(channel, "%s is marked as completed for the week" % show["series"])
 
     # Step 11: Update the topic
     self.factory.update_topic()

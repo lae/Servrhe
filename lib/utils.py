@@ -106,3 +106,55 @@ def cache(self, user, ftp, premux, premux_len):
         defer.returnValue(False)
     else:
         defer.returnValue(True)
+
+def getRheinbow(v):
+    v = v % 1536
+    r, g, b = 255, v, 0
+    if g > 255:
+        r -= g - 255
+        g = 255
+    if r < 0:
+        b = -r
+        r = 0
+    if b > 255:
+        g -= b - 255
+        b = 255
+    if g < 0:
+        r = -g
+        g = 0
+    if r > 255:
+        b -= r - 255
+        r = 255
+    return "{:02X}{:02X}{:02X}".format(r, g, b)
+
+def getRheinbows(n):
+    total = 1536
+    chunk = total / n
+    bows = []
+    for i in range(n):
+        bows.append(getRheinbow(i * chunk))
+    return bows
+
+def rheinbowify(text):
+    final = []
+    count, skip = 0, 0
+    for letter in text:
+        if letter == "[":
+            skip += 1
+        elif letter == "]" and skip > 0:
+            skip -= 1
+        elif not skip and letter != " ":
+            count += 1
+    bows = getRheinbows(count)
+    count, skip = 0, 0
+    for letter in text:
+        if letter == "[":
+            skip += 1
+        elif letter == "]" and skip > 0:
+            skip -= 1
+        if skip or letter == "]" or letter == " ":
+            final.append(letter)
+        else:
+            final.append('[color="#{}"]{}[/color]'.format(bows[count], letter))
+            count += 1
+    return "".join(final)

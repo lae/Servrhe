@@ -18,7 +18,7 @@ def command(self, user, channel, msg):
         self.msg(channel, config["help"])
         return
 
-    subcommands = ("rip", "autorip", "list", "info", "config", "reload", "login")
+    subcommands = ("rip", "autorip", "list", "info", "config", "reload", "login", "delete")
     command = msg[0].lower()
 
     if command not in subcommands:
@@ -86,7 +86,7 @@ def command(self, user, channel, msg):
             "quality": quality,
             "video": video,
             "subs": subs,
-            "downloaded": self.factory.crunchy.data["shows"][series].keys()
+            "downloaded": sorted(self.factory.crunchy.data["shows"][series].keys())
         }
 
         contents = spliceContents(video, subs)
@@ -118,7 +118,7 @@ def command(self, user, channel, msg):
 
         elif subcommand == "autodownloads":
             data = self.factory.crunchy.data["auto_downloads"]
-            self.msg(channel, ", ".join(["{} for {} at {}p".format(spliceContents(data[k]["video"], data[k]["subs"]), k, data[k]["quality"]) for k in sorted(data.keys())]))
+            self.msg(channel, ", ".join(["{} for {} at {}p".format(spliceContents(data[k]["video"], data[k]["subs"]), k.encode("utf8"), data[k]["quality"]) for k in sorted(data.keys())]))
 
         else:
             self.msg(channel, ".cr list series || .cr list episodes [series] || .cr list autodownloads || Those are your only three options, stop trying to be a special snowflake.")
@@ -183,6 +183,34 @@ def command(self, user, channel, msg):
     elif command == "login":
         yield self.factory.crunchy.login()
         self.msg(channel, "Logged in to Crunchyroll")
+
+    elif command == "delete":
+        if not "owner" in self.getPermissions(user):
+            self.msg(channel, "Insufficient permissions. Only the owner can use this command")
+            return
+
+        if len(msg) < 3:
+            self.msg(channel, ".cr delete [episode] [series] || Deletes an episode from the cache, Series uses CR's naming")
+            return
+
+        key, series = msg[1], " ".join(msg[2:])
+        success, series = self.factory.crunchy.resolve(series)
+
+        try:
+            key = "{:02d}".format(int(key))
+        except:
+            self.notice(user, "Episode was not an integer, assuming it was the exact key.")
+
+        if not success:
+            self.msg(channel, series)
+            return
+
+        if key not in self.factory.crunchy.data["shows"][series]:
+            self.msg(channel, "No data for that episode, try again when CR has added it")
+            return
+
+        del self.factory.crunchy.data["shows"][series][key]
+        self.msg(channel, "{} #{} deleted from Crunchyroll cache".format(series.encode("utf8"), key))
 
     else:
         self.msg(channel, "ERROR 634: How the fuck did this happen?")

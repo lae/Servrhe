@@ -1,6 +1,7 @@
 ### Copy-Pasted from https://github.com/russss/Herd/blob/master/BitTornado/bencode.py
 from lib.utils import normalize
 from types import IntType, LongType, StringType, ListType, TupleType, DictType
+import time, hashlib, os
 try:
     from types import BooleanType
 except ImportError:
@@ -47,7 +48,7 @@ def makeTorrent(fname, folder = "."):
         "encoding": "UTF-8"
     }
     data["info"]["name"] = normalize(fname)
-    data["info"]["length"] = size = os.path.getsize(fname)
+    data["info"]["length"] = size = os.path.getsize("{}/{}".format(folder, fname))
     # 1MB pieces if file > 512MB, else 512KB pieces
     data["info"]["piece length"] = piece_length = 2**20 if size > 512*1024*1024 else 2**19
     pieces = []
@@ -58,7 +59,7 @@ def makeTorrent(fname, folder = "."):
             pieces.append(hashlib.sha1(chunk).digest())
             p += piece_length
     data["info"]["pieces"] = "".join(pieces)
-    torrentname = fname.rsplit(".",1)[0] + ".torrent"
-    with open(torrentname, "wb") as f:
+    torrentname = fname + ".torrent"
+    with open("{}/{}".format(folder, torrentname), "wb") as f:
         f.write(bencode(data))
     return torrentname

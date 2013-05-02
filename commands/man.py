@@ -10,9 +10,7 @@ def command(self, user, channel, msg):
     if not msg:
         msg = ["man"]
 
-    permissions = ["public"]
-    if user in self.admins and self.admins[user]:
-        permissions.append("admin")
+    permissions = self.getPermissions(user)
 
     commands = []
     for command in self.factory.pluginmanager.plugins.values():

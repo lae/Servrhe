@@ -74,7 +74,8 @@ class Servrhe(irc.IRCClient):
             return
         if not msg.startswith("."): # not a trigger command
             alias = self.factory.alias.resolve(user)
-            self.factory.markov.learn(alias, msg, channel)
+            if alias not in self.factory.config.markov_banned:
+                self.factory.markov.learn(alias, msg, channel)
             return # do nothing
         command, sep, rest = msg.lstrip(".").partition(" ")
         command, msg, reverse = command.lower(), filter(lambda x: x, rest.split(" ")), False
@@ -92,8 +93,6 @@ class Servrhe(irc.IRCClient):
                 self.factory.pluginmanager.plugins[command]["command"](self, user, channel, msg, reverse)
         else:
             alias = self.factory.alias.resolve(command)
-            if alias in ("c","k","kb","sync","op","deop","protect","deprotect","ban","unban"):
-                return
             if alias in self.factory.markov.users and "markov" in self.factory.pluginmanager.plugins:
                 msg = [alias] + msg
                 self.factory.pluginmanager.plugins["markov"]["command"](self, user, channel, msg)
@@ -167,6 +166,7 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             "notifies": {},
             "premux_dir": "",
             "mad": False,
+            "markov_banned": ["c","k","kb","sync","op","deop","protect","deprotect","ban","unban"],
             # Release config
             "rip_host": "",
             "cr_user": "",

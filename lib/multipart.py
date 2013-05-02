@@ -147,6 +147,7 @@ class MultiPartProducer:
     def _boundary(self):
         boundary = None
         try:
+            import uuid
             boundary = uuid.uuid4().hex
         except ImportError:
             import random, sha

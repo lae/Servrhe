@@ -3,7 +3,7 @@ from twisted.internet.defer import inlineCallbacks
 from twisted.internet.protocol import ClientCreator
 from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
 from lib.utils import cache
-import fnmatch
+import fnmatch, os
 
 config = {
     "access": "admin",
@@ -41,6 +41,11 @@ def command(self, user, channel, msg):
     else:
         premux = premux[0]
     premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+
+
+    if os.path.isfile("{}/{}".format(self.factory.config.premux_dir, premux)):
+        self.msg(channel, "{} already is cached. Message fugi if you need it re-cached.".format(premux))
+        return
 
     success = yield cache(self, user, ftp, premux, premux_len)
 

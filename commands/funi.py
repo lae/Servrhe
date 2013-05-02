@@ -17,7 +17,7 @@ def command(self, user, channel, msg):
         self.msg(channel, config["help"])
         return
 
-    subcommands = ("rip", "autorip", "list", "info", "config", "reload", "login")
+    subcommands = ("rip", "autorip", "list", "info", "config", "reload", "login", "delete")
     command = msg[0].lower()
 
     if command not in subcommands:
@@ -72,7 +72,7 @@ def command(self, user, channel, msg):
 
         self.factory.funi.data["auto_downloads"][series] = {
             "quality": quality,
-            "downloaded": self.factory.funi.data["shows"][series].keys()
+            "downloaded": sorted(self.factory.funi.data["shows"][series].keys())
         }
 
         self.msg(channel, "Set {} to autorip at {}p. You won't really know if it works though. ┐(￣ー￣)┌".format(series, quality))
@@ -172,6 +172,34 @@ def command(self, user, channel, msg):
             self.msg(channel, "Login to Funimation successful")
         else:
             self.msg(channel, "Login to Funimation failed, but will automatically retry until it works.")
+
+    elif command == "delete":
+        if not "owner" in self.getPermissions(user):
+            self.msg(channel, "Insufficient permissions. Only the owner can use this command")
+            return
+
+        if len(msg) < 3:
+            self.msg(channel, ".funi delete [episode] [series] || Deletes an episode from the cache, Series uses Funi's naming")
+            return
+
+        key, series = msg[1], " ".join(msg[2:])
+        success, series = self.factory.funi.resolve(series)
+
+        try:
+            key = "{:02d}".format(int(key))
+        except:
+            self.notice(user, "Episode was not an integer, assuming it was the exact key.")
+
+        if not success:
+            self.msg(channel, series)
+            return
+
+        if key not in self.factory.funi.data["shows"][series]:
+            self.msg(channel, "No data for that episode, try again when Funi has added it")
+            return
+
+        del self.factory.funi.data["shows"][series][key]
+        self.msg(channel, "{} #{} deleted from Funimation cache".format(series.encode("utf8"), key))
 
     else:
         self.msg(channel, "ERROR 634: How the fuck did this happen?")
