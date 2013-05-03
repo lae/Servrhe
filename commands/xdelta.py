@@ -4,11 +4,11 @@ from twisted.internet.protocol import ClientCreator
 from twisted.internet.utils import getProcessValue
 from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
 from lib.utils import cache, getPath, Downloader
-import uuid, os, fnmatch, shutil, binascii
+import uuid, os, fnmatch, shutil, binascii, re
 
 config = {
     "access": "admin",
-    "help": ".xdelta [filter] [show name] || .xdelta premux eotena || Creates an xdelta for the premux and ass matching the filter for the show",
+    "help": ".xdelta [filter] [show name] (--previous) (--no-chapters) || .xdelta premux eotena || Creates an xdelta for the current episode of the show. Requires an .mkv, .ass and .xml file. [filter] is used to limit what files are downloaded, with * as a wildcard. Use --previous for releasing a v2. Use --no-chapters if there is no chapters file.",
     "reversible": False
 }
 
@@ -17,6 +17,13 @@ def command(self, user, channel, msg):
     if len(msg) < 2:
         self.msg(channel, "Need a filter and show name")
         return
+    offset, chapters_required = 1, True
+    while msg[-1][:2] == "--":
+        arg = msg.pop()
+        if arg == "--previous":
+            offset = 0
+        elif arg == "--no-chapters":
+            chapters_required = False
     name_filter, show, fname = msg[0], " ".join(msg[1:]), "test.mkv"
 
     show = self.factory.resolve(show, channel)
@@ -25,7 +32,7 @@ def command(self, user, channel, msg):
     if not show["folder"]:
         self.msg(channel, "No FTP folder given for {}".format(show["series"]))
         return
-    episode = show["current_ep"] + 1
+    episode = show["current_ep"] + offset
     guid = uuid.uuid4().hex
     while os.path.exists(guid):
         guid = uuid.uuid4().hex
@@ -57,14 +64,15 @@ def command(self, user, channel, msg):
         return
     else:
         script = script[0]
-    if not chapters:
-        self.msg(channel, "No chapters found")
-        return
-    elif len(chapters) > 1:
-        self.msg(channel, "Too many chapter files match the filter: {}".format(", ".join(chapters)))
-        return
-    else:
-        chapters = chapters[0]
+    if chapters_required:
+        if not chapters:
+            self.msg(channel, "No chapters found")
+            return
+        elif len(chapters) > 1:
+            self.msg(channel, "Too many chapter files match the filter: {}".format(", ".join(chapters)))
+            return
+        else:
+            chapters = chapters[0]
 
     # Step 2: Download that shit
     if not os.path.isfile("{}/{}".format(self.factory.config.premux_dir, premux)):
@@ -84,15 +92,18 @@ def command(self, user, channel, msg):
         yield ftp.quit()
         ftp.fail(None)
         return
-    chapters_len = [x["size"] for x in filelist.files if x["filename"] == chapters][0]
-    chapters_downloader = Downloader("{}/{}".format(guid, chapters))
-    yield ftp.retrieveFile(chapters, chapters_downloader)
-    if chapters_downloader.done() != chapters_len:
-        self.msg(channel, "Aborted creating xdelta for {}: Download of chapter file had incorrect size.".format(show["series"]))
-        yield ftp.quit()
-        ftp.fail(None)
-        return
-    self.notice(user, "Found premux, script and chapters: {}, {} and {}".format(premux, script, chapters))
+    if chapters_required:
+        chapters_len = [x["size"] for x in filelist.files if x["filename"] == chapters][0]
+        chapters_downloader = Downloader("{}/{}".format(guid, chapters))
+        yield ftp.retrieveFile(chapters, chapters_downloader)
+        if chapters_downloader.done() != chapters_len:
+            self.msg(channel, "Aborted creating xdelta for {}: Download of chapter file had incorrect size.".format(show["series"]))
+            yield ftp.quit()
+            ftp.fail(None)
+            return
+        self.notice(user, "Found premux, script and chapters: {}, {} and {}".format(premux, script, chapters))
+    else:
+        self.notice(user, "Found premux and script: {} and {}".format(premux, script))
 
     # Step 3: Download fonts
     filelist = FTPFileListProtocol()
@@ -110,7 +121,9 @@ def command(self, user, channel, msg):
     self.notice(user, "Fonts downloaded. ({})".format(", ".join(fonts)))
 
     # Step 4: MKVMerge
-    arguments = ["-o", "{}/{}".format(guid, fname), "--no-chapters", "--chapters", "{}/{}".format(guid, chapters)]
+    arguments = ["-o", "{}/{}".format(guid, fname)]
+    if chapters_required:
+        arguments.extend(["--no-chapters", "--chapters", "{}/{}".format(guid, chapters)])
     for font in fonts:
         arguments.extend(["--attachment-mime-type", "application/x-truetype-font", "--attach-file", "{}/{}".format(guid, font)])
     arguments.extend(["{}/{}".format(guid, premux), "{}/{}".format(guid, script)])

@@ -61,6 +61,7 @@ class Servrhe(irc.IRCClient):
 
     def privmsg(self, hostmask, channel, msg):
         user = hostmask.split("!", 1)[0]
+        alias = self.factory.alias.resolve(user)
         channel = channel if channel != self.nickname else user
         if self.factory.config.mad and "rhe" in msg.lower():
             shutup = "SHUT UP {}".format(user.upper())
@@ -73,7 +74,6 @@ class Servrhe(irc.IRCClient):
                 self.msg(channel, shutup)
             return
         if not msg.startswith("."): # not a trigger command
-            alias = self.factory.alias.resolve(user)
             if alias not in self.factory.config.markov_banned:
                 self.factory.markov.learn(alias, msg, channel)
             return # do nothing
@@ -84,7 +84,7 @@ class Servrhe(irc.IRCClient):
             reverse = True
             if not self.factory.pluginmanager.plugins[command]["reversible"]:
                 return
-        permissions = self.getPermissions(user)
+        permissions = self.getPermissions(alias)
         if command in self.factory.pluginmanager.plugins and self.factory.pluginmanager.plugins[command]["access"] in permissions:
             log(user, channel, command, msg, reverse)
             if not self.factory.pluginmanager.plugins[command]["reversible"]:

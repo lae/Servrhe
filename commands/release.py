@@ -14,7 +14,7 @@ import uuid, os, fnmatch, shutil, binascii, cookielib, re, urllib
 
 config = {
     "access": "admin",
-    "help": ".release [filter] [show name] || .release premux Accel World || Release the show where the FTP file contains the filter",
+    "help": ".release [filter] [show name] (--previous) || .release premux Accel World || Releases the show by uploading to DCC bots, the seedbox, Nyaa, TT, and creating the blog post. Requires a .mkv and .xdelta. [filter] is used to limit what files are downloaded, with * as a wildcard. Use --previous for releasing a v2.",
     "reversible": False
 }
 
@@ -24,6 +24,11 @@ def command(self, user, channel, msg):
         self.msg(channel, "Need a filter and a showname")
         return
     name_filter = msg[0]
+    offset = 1
+    while msg[-1][:2] == "--":
+        arg = msg.pop()
+        if arg == "--previous":
+            offset = 0
     show = self.factory.resolve(" ".join(msg[1:]), channel)
     if show is None:
         return
@@ -33,12 +38,11 @@ def command(self, user, channel, msg):
     if not show["xdcc_folder"]:
         self.msg(channel, "No XDCC folder given for {}".format(show["series"]))
         return
-    episode = show["current_ep"] + 1
+    episode = show["current_ep"] + offset
     guid = uuid.uuid4().hex
     while os.path.exists(guid):
         guid = uuid.uuid4().hex
     os.mkdir(guid)
-    self.msg(channel, "Fugiman: {} has initiated a release for {} {:d}. UUID is {}. Thought you ought to know.".format(user, show["series"], episode, guid))
 
     # Step 1: Search FTP for complete episode, or premux + xdelta
     ftp = yield ClientCreator(reactor, FTPClient, self.factory.config.ftp_user, self.factory.config.ftp_pass).connectTCP(self.factory.config.ftp_host, self.factory.config.ftp_port)
@@ -137,6 +141,9 @@ def command(self, user, channel, msg):
     if crc != calc:
         self.msg(channel, "Aborted releasing {}: CRC failed verification. Filename = '{}', Calculated = '{}'.".format(show["series"], crc, calc))
         return
+    # Step 1d: Determine version number
+    match = re.search("(v\d+)", complete)
+    version = match.group(1) if match is not None else ""
 
     # Step 2: Create torrent
     try:
@@ -257,10 +264,11 @@ def command(self, user, channel, msg):
         response = yield ttagent.request("POST","http://tokyotosho.info/new.php",
             Headers({'Content-Type': ['application/x-www-form-urlencoded']}),
             FileBodyProducer(StringIO(urllib.urlencode({
-                "type": 1,
+                "type": "1",
                 "url": download_link,
                 "comment": "#commie-subs@irc.rizon.net",
                 "website": "http://www.commiesubs.com/",
+                "send": "Submit New Torrent"
             }))))
         body = yield returnBody(response)
         if "Torrent Submitted" not in body:
@@ -272,6 +280,13 @@ def command(self, user, channel, msg):
 
     # Step 9: Create blog post
     blog = Proxy("http://commiesubs.com/xmlrpc.php")
+    slug = show["blog_link"].split("/")[-2]
+    categories = ["The Bread Lines"]
+    result = yield blog.callRemote("wp.getTerms", 0, self.factory.config.blog_user, self.factory.config.blog_pass, "category")
+    for term in result:
+        if term["slug"] == slug:
+            categories.append(term["name"])
+
     try:
         yield blog.callRemote("wp.newPost",
             0, # Blog ID
@@ -279,10 +294,11 @@ def command(self, user, channel, msg):
             self.factory.config.blog_pass, # Password
             { # Content
                 "post_type": "post",
-                "post_status": "published",
-                "post_title": show["series"] + " " + episode,
+                "post_status": "publish",
+                "comment_status": "open",
+                "post_title": "{} {:02d}{}".format(show["series"], episode, version),
                 "post_content": "<a href=\"{}\">Torrent</a>".format(info_link),
-                "terms_names": {"category": ["The Bread Lines", show["blog_link"].split("/")[-2].replace("-"," ")]}
+                "terms_names": {"category": categories}
             }
         )
         self.notice(user, "Created blog post")
@@ -293,8 +309,7 @@ def command(self, user, channel, msg):
     data = yield self.factory.load("show","update", data={"id":show["id"],"method":"next_episode"})
     if "status" in data and not data["status"]:
         self.msg(channel, data["message"])
-    else:
-        self.msg(channel, "%s is marked as completed for the week" % show["series"])
+    self.msg(channel, "{} released. Torrent @ {}".format(show["series"], info_link))
 
     # Step 11: Update the topic
     self.factory.update_topic()

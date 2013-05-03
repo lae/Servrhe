@@ -1,5 +1,5 @@
 config = {
-    "access": "owner",
+    "access": "superadmin",
     "help": ".say [channel] [message] || .say #commie-subs derp derp derp || Say something",
     "reversible": False
 }
