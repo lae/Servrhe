@@ -1,7 +1,8 @@
 config = {
     "access": "public",
     "help": ".ranking [name] || .ranking duwang || Gives the markov rank of a user, or the top 5 if not user specified",
-    "reversible": False
+    "reversible": False,
+    "disabled": False
 }
 
 def command(self, user, channel, msg):
@@ -11,6 +12,10 @@ def command(self, user, channel, msg):
         return
 
     name = self.factory.alias.resolve(msg[0])
+    perms = self.getPermissions(user)
+    if name == "refresh" and "owner" in perms:
+        self.factory.markov.loadRanking()
+        return
 
     if name[0] == "#":
         try:

@@ -5,7 +5,8 @@ import datetime
 config = {
     "access": "public",
     "help": ".markov [name] || .markov foogi || Ramble as [name] would, utilizing markov chains",
-    "reversible": False
+    "reversible": False,
+    "disabled": False
 }
 
 cooldowns = {}

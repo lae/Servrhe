@@ -15,6 +15,8 @@ class PluginManager(object):
                 reload(plugin)
                 plugin.config["name"] = name
                 plugin.config["command"] = plugin.command
+                if "disabled" in plugin.config and plugin.config["disabled"]:
+                    continue
                 self.plugins[name] = plugin.config
             except:
                 print "WARNING: Failed to import {}.{}!".format(self.path, name)

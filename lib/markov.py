@@ -1,33 +1,54 @@
+from twisted.internet import reactor
 from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.internet.task import LoopingCall
 from bs4 import UnicodeDammit
-import json, random
+from txmongo._pymongo.son import SON
+import datetime, json, random, txmongo
+
+def aggregate(self, pipeline):
+    if not isinstance(pipeline, (dict, list, tuple)):
+        raise TypeError("pipeline must be a dict, list or tuple")
+
+    if isinstance(pipeline, dict):
+        pipeline = [pipeline]
+
+    command = SON([("aggregate", self._collection_name)])
+    command.update({"pipeline": pipeline})
+
+    return self._database["$cmd"].find_one(command)
 
 class Markov(object):
     def __init__(self, db, aliases):
-        self.db = db
+        self.db = db.markov
+        self.db.aggregate = lambda p: aggregate(self.db, p)
         self.aliases = aliases
         self.users = {}
         self.ranking = {}
+        self.start()
+
+    def start(self):
+        if isinstance(self.db._database._connection, txmongo._offline):
+            reactor.callLater(3, self.start)
+            return
+        print ">>> MARKOV: Starting..."
         self.loadUsers()
-        LoopingCall(self.loadRanking).start(3600)
+        LoopingCall(self.loadRanking).start(60)
 
     @inlineCallbacks
     def loadUsers(self):
-        result = yield self.db.runQuery("SELECT DISTINCT name FROM parts")
-        for line in result:
-            self.users[line[0]] = True
+        result = yield self.db.distinct("name")
+        for name in result:
+            self.users[name] = True
 
     @inlineCallbacks
     def loadRanking(self):
-        result = yield self.db.runQuery("SELECT DISTINCT a.name, b.name_count FROM parts a INNER JOIN (SELECT name, COUNT(name) as name_count FROM parts GROUP BY name) b ON a.name = b.name ORDER BY b.name_count DESC")
+        result = yield self.db.aggregate([{"$group": {"_id": "$name", "count": {"$sum": 1}}}, {"$sort": {"count": -1}}])
         self.ranking = {}
-        for rank, line in enumerate(result):
-            name, lines = line
-            self.ranking[name.lower()] = {
+        for rank, data in enumerate(result["result"]):
+            self.ranking[data["_id"].lower()] = {
                 "rank": rank+1,
-                "name": name,
-                "lines": lines
+                "name": data["_id"],
+                "lines": data["count"]
             }
     
     @inlineCallbacks
@@ -40,12 +61,22 @@ class Markov(object):
             return
         phrase = phrase.split(" ")
         phrase = filter(lambda x: x and "http" not in x and "ftp:" not in x and x[0] != ".", phrase)
+        now = datetime.datetime.utcnow()
+        documents = []
 
         for i in range(len(phrase) + 1):
             seed = UnicodeDammit.detwingle(phrase[i-1] if i > 0 else "")
             answer = UnicodeDammit.detwingle(phrase[i] if i < len(phrase) else "")
 
-            yield self.db.runQuery("INSERT INTO parts(name, seed, answer, source) VALUES(%s, %s, %s, %s)", (name, seed, answer, channel))
+            documents.append({
+                "name": name,
+                "seed": seed,
+                "answer": answer,
+                "added": now,
+                "random": random.random()
+            })
+
+        yield self.db.insert(documents, safe=True)
 
     @inlineCallbacks
     def ramble(self, name=None, seed=""):
@@ -77,23 +108,21 @@ class Markov(object):
         returnValue(response)
 
     @inlineCallbacks
-    def prev(self, name, seed):
+    def prev(self, name, answer):
+        query = {"answer": answer, "random": {"$gte": random.random()}}
         if name:
-            result = yield self.db.runQuery('SELECT seed FROM parts WHERE name = %s AND answer = %s', (name, seed))
-        else:
-            result = yield self.db.runQuery('SELECT seed FROM parts WHERE answer = %s', (seed, ))
+            query["name"] = name
+        result = yield self.db.find(query, fields=["seed"], limit=1, filter=txmongo.filter.sort(txmongo.filter.ASCENDING("random")))
         if not result:
             returnValue("")
-        row = random.randint(0, len(result) - 1)
-        returnValue(result[row][0])
+        returnValue(result[0]["seed"])
 
     @inlineCallbacks
     def next(self, name, seed):
+        query = {"seed": seed, "random": {"$gte": random.random()}}
         if name:
-            result = yield self.db.runQuery("SELECT answer FROM parts WHERE name = %s AND seed = %s", (name, seed))
-        else:
-            result = yield self.db.runQuery("SELECT answer FROM parts WHERE seed = %s", (seed, ))
+            query["name"] = name
+        result = yield self.db.find(query, fields=["answer"], limit=1, filter=txmongo.filter.sort(txmongo.filter.ASCENDING("random")))
         if not result:
             returnValue("")
-        row = random.randint(0, len(result) - 1)
-        returnValue(result[row][0])
+        returnValue(result[0]["answer"])

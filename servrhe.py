@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 # Actual bot stuff
-from twisted.enterprise import adbapi
 from twisted.internet import reactor, protocol, task, defer
 from twisted.words.protocols import irc
 from lib.config import Config
@@ -12,7 +11,7 @@ from lib.crunchy import Crunchyroll
 from lib.funi import Funimation
 from lib.markov import Markov
 from lib.utils import log, fetchPage, normalize
-import urllib, json, datetime, random
+import urllib, json, datetime, random, txmongo
 
 class Servrhe(irc.IRCClient):
     nickname = "ServrheV3"
@@ -204,15 +203,12 @@ class ServrheFactory(protocol.ReconnectingClientFactory):
             # Topic config
             "topic": ["☭ Commie Subs ☭",20,20.56],
             # Database
-            "db_library": "",
             "db_host": "",
             "db_port": "",
-            "db_database": "",
-            "db_user": "",
-            "db_pass": ""
+            "db_database": ""
         })
         self.pluginmanager = PluginManager("commands")
-        self.db = adbapi.ConnectionPool(self.config.db_library, host=self.config.db_host, port=self.config.db_port, db=self.config.db_database, user=self.config.db_user, passwd=self.config.db_pass, cp_reconnect=True)
+        self.db = getattr(txmongo.lazyMongoConnectionPool(self.config.db_host, self.config.db_port, pool_size=3), self.config.db_database)
         self.alias = Aliases("alias.json")
         self.markov = Markov(self.db, self.alias)
         self.crunchy = Crunchyroll("crunchyroll.json", self.config, self.broadcast)
