@@ -1,26 +1,22 @@
-from twisted.internet.defer import inlineCallbacks
-from lib.utils import dt2ts
 import datetime
 
 config = {
     "access": "public",
-    "help": ".markov [name] || .markov foogi || Ramble as [name] would, utilizing markov chains",
-    "reversible": False,
-    "disabled": False
+    "help": ".markov (--name=NAME) (--seed=SEED) || .markov foogi || Ramble as [name] would, utilizing markov chains"
 }
 
 cooldowns = {}
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    permissions = self.getPermissions(user)
+def command(guid, manager, irc, channel, user, name = None, seed = None):
+    permissions = yield manager.getPermissions(user)
     now = datetime.datetime.utcnow()
 
-    if "owner" in permissions:
-        cooldown = datetime.timedelta(minutes=0)
-    elif "admin" in permissions:
-        cooldown = datetime.timedelta(minutes=0)
-    elif user.lower() in self.admins: # Just for aers
+    if name is not None and " " in name:
+        name = name.split(" ")[0]
+    if seed is not None and " " in seed:
+        seed = seed.split(" ")[0]
+
+    if "staff" in permissions:
         cooldown = datetime.timedelta(minutes=0)
     else:
         cooldown = datetime.timedelta(minutes=3)
@@ -35,36 +31,32 @@ def command(self, user, channel, msg):
         if cooldowns[user]["warnings"] >= 5 or cooldowns[user]["kicks"] >= 10:
             cooldowns[user]["warnings"] = 0
             cooldowns[user]["kicks"] = 0
-            self.kickban(channel, user, "Markov command abuse")
+            irc.kickban(channel, user, u"Markov command abuse")
         elif cooldowns[user]["warnings"] >= 3:
             cooldowns[user]["kicks"] += 1
-            self.kick(channel, user, "Markov command abuse")
+            irc.kick(channel, user, u"Markov command abuse")
         else:
             cooldowns[user]["warnings"] += 1
-            diff = dt2ts(cooldowns[user]["time"] - now)
-            self.notice(user, "You just used this command, please wait {} before using it again.".format(diff))
+            diff = manager.master.modules["utils"].dt2ts(cooldowns[user]["time"] - now)
+            irc.notice(user, u"You just used this command, please wait {} before using it again.".format(diff))
         return
 
-    if not msg:
+    if not name:
         cooldowns[user]["time"] = now + cooldown
         cooldowns[user]["warnings"] = 0
-        message = yield self.factory.markov.ramble()
-        self.msg(channel, message)
+        message = yield manager.master.modules["markov"].ramble(seed=seed)
+        irc.msg(channel, message)
         return
 
-    name = self.factory.alias.resolve(msg[0])
-    if self.isAdmin(name) and user.lower() not in self.admins:
+    otherperms = yield manager.getPermissions(name)
+    if "staff" in otherperms and "staff" not in permissions:
         cooldown *= 5
 
-    if "owner" not in permissions or name != "list":
-        if name not in self.factory.markov.users:
-            self.msg(channel, "No data on {}".format(msg[0]))
-            return
-        else:
-            cooldowns[user]["time"] = now + cooldown
-            cooldowns[user]["warnings"] = 0
-            seed = msg[1] if len(msg) > 1 else ""
-            message = yield self.factory.markov.ramble(name, seed)
-            self.msg(channel, message)
-        return
-    self.msg(channel, ", ".join(self.factory.markov.users.keys()))
+    name = yield manager.master.modules["alias"].resolve(name)
+    if name not in manager.master.modules["markov"].ranking:
+        raise manager.exception(u"No data on {}".format(name))
+
+    cooldowns[user]["time"] = now + cooldown
+    cooldowns[user]["warnings"] = 0
+    message = yield manager.master.modules["markov"].ramble(name, seed)
+    irc.msg(channel, message)

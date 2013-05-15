@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-import time, re
+
+import os, re, time
+
+dependencies = []
 
 def timeToInt(time):
     p = time.split(":")
@@ -22,6 +25,57 @@ def intToTime(i, short = False):
     s = ("00" + str(s))[-2:]
     ms = ("00" + str(ms/10))[-2:] if short else (("000" + str(ms))[-3:] + "000000000")[:9]
     return "%s:%s:%s.%s" % (h, m, s, ms)
+
+class Module(object):
+    def __init__(self, master):
+        self.master = master
+
+    def stop(self):
+        pass
+
+    def timeToInt(self, time):
+        return timeToInt(time)
+
+    def intToTime(self, i, short = False):
+        return intToTime(i, short)
+    
+    def getFonts(folder, filename):
+        subs = SubParser(os.path.join(folder, filename))
+        fonts = set([x["Fontname"] for x in subs.styles.values()])
+        for event in subs.events:
+            # Warning: This will catch all instances of \fnXXX, not just ASS tags
+            fonts += re.findall("\\fn([^\\}]+)", event["Text"])
+        return fonts
+
+    def getFontName(folder, filename):
+        tags = {}
+        ntoffset, offset, records = None, None, None
+        with open(os.path.join(folder, filename), "rb") as f:
+            data = f.read()
+
+        tables = struct.unpack_from(">H", data, 4)[0]
+        for i in range(tables):
+            tag = data[i*16 + 12:i*16 + 16]
+            if tag == "name":
+                ntoffset = struct.unpack_from(">I", data, i*16 + 20)[0]
+                offset = struct.unpack_from(">H", data, ntoffset + 4)[0]
+                records = struct.unpack_from(">H", data, ntoffset + 2)[0]
+                break
+
+        if ntoffset is None:
+            return tags
+
+        storage = ntoffset + offset
+        for i in range(records):
+            id = struct.unpack_from(">H", data, ntoffset + i*12 + 12)[0]
+            length = struct.unpack_from(">H", data, ntoffset + i*12 + 14)[0]
+            offset = struct.unpack_from(">H", data, ntoffset + i*12 + 16)[0]
+
+            value = data[storage + offset:storage + offset + length]
+            value = u"".join([x for x in value if x != "\x00"])
+            tags[id] = value
+
+        return tags[1] if 1 in tags else None
 
 class SubParser(object):
     info_output = ("Title","PlayResX","PlayResY","ScaledBorderAndShadow","ScriptType","WrapStyle")
@@ -75,7 +129,7 @@ class SubParser(object):
                         s["key"] = key
                         for k in ("MarginL","MarginR","MarginV"):
                             s[k] = str(int(s[k]))
-                        if s["Text"][0] == "{" and s["Text"][-1] == "}" and "{" not in s["Text"][1:-1] and "}" not in s["Text"][1:-1]:
+                        if len(s["Text"]) > 2 and s["Text"][0] == "{" and s["Text"][-1] == "}" and "{" not in s["Text"][1:-1] and "}" not in s["Text"][1:-1]:
                             args = s["Text"][1:-1].split("|")
                             keyword = args.pop(0)
                             self.keywords.append({"line": len(self.events), "keyword": keyword, "args": args, "time": s["time"]})

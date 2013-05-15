@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 #
 # FLV Extract
 # Copyright (C) 2006-2012  J.D. Purcell (moitah@yahoo.com)
@@ -18,6 +20,15 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 
+dependencies = []
+
+class Module(object):
+    def __init__(self, master):
+        self.master = master
+        self.FLVFile = FLVFile
+
+    def stop(self):
+        pass
 
 ##################
 ### flvfile.py ###

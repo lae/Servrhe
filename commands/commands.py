@@ -1,16 +1,15 @@
 config = {
     "access": "public",
-    "help": ".commands || .commands || Lists available commands",
-    "reversible": False
+    "help": ".commands || .commands || Lists available commands"
 }
 
-def command(self, user, channel, msg):
-    permissions = self.getPermissions(user)
+def command(guid, manager, irc, channel, user):
+    permissions = yield manager.getPermissions(user)
     r = []
-    for command in self.factory.pluginmanager.plugins.values():
+    for command in manager.commands.values():
         if command["access"] in permissions:
             r.append(command["name"])
-            if command["reversible"]:
+            if "reverse" in command["kwargs"]:
                 r.append("un{}".format(command["name"]))
     r.sort()
-    self.msg(channel, "Available commands: {}".format(" ".join(r)))
+    irc.msg(channel, u"Available commands: {}".format(" ".join(r)))

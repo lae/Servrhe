@@ -1,25 +1,16 @@
-from twisted.internet.defer import inlineCallbacks
-from lib.utils import dt2ts
-import datetime
+from datetime import datetime as dt
 
 config = {
     "access": "public",
-    "help": ".aired || .aired || Lists the shows aired but not encoded",
-    "reversible": False
+    "help": ".aired || .aired || Lists the shows aired but not encoded"
 }
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    dt = datetime.datetime
+def command(guid, manager, irc, channel, user):
     now = dt.utcnow()
-    data = yield self.factory.load("shows","aired")
-    if "status" in data and not data["status"]:
-        self.msg(channel, data["message"])
-        return
-    data = data["results"]
+    manager.dispatch("update", guid, u"Waiting on showtimes.aired")
+    data = yield manager.master.modules["showtimes"].aired()
     if not data:
-        self.msg(channel, "No shows awaiting encoding")
+        irc.msg(channel, u"No shows awaiting encoding")
     for d in data:
-        ep = str(d["current_ep"]+1)
-        aired = dt2ts(now - dt.utcfromtimestamp(d["airtime"]))
-        self.msg(channel, "{} {} aired {} ago on {}".format(d["series"], ep, aired, d["channel"]))
+        aired = manager.master.modules["utils"].dt2ts(now - dt.utcfromtimestamp(d.airtime))
+        irc.msg(channel, u"{} {:02d} aired {} ago on {}".format(d.name.english, d.episode.current + 1, aired, d.channel))

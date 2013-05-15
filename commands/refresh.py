@@ -1,12 +1,8 @@
-from twisted.internet.defer import inlineCallbacks
-
 config = {
     "access": "admin",
-    "help": ".refresh || .refresh || Refresh show cache",
-    "reversible": False
+    "help": ".refresh || .refresh || Refresh show cache"
 }
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    yield self.factory.refresh_shows()
-    self.msg(channel, "Show cache refreshed")
+def command(guid, manager, irc, channel, user):
+    yield manager.master.modules["showtimes"].refreshShows()
+    irc.msg(channel, "Show cache refreshed")

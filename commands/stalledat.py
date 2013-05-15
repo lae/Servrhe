@@ -1,45 +1,24 @@
-from twisted.internet.defer import inlineCallbacks
-from lib.utils import dt2ts
-import datetime
+from datetime import datetime as dt
 
 config = {
     "access": "public",
-    "help": ".stalledat [person] || .stalledat foogiman || Reports which shows a user is stalling",
-    "reversible": False
+    "help": ".stalledat [person] || .stalledat foogiman || Reports which shows a user is stalling"
 }
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    if not msg:
-        self.msg(channel, "Must provide a victim to check")
-        return
-    victim = self.factory.alias.resolve(" ".join(msg))
-    dt = datetime.datetime
-    yield self.factory.refresh_shows()
+def command(guid, manager, irc, channel, user, victim):
+    victim = yield manager.master.modules["alias"].resolve(victim)
     shows = []
-    for show in self.factory.shows.values():
-        blame = ""
-        if not show["encoded"]:
-            continue
-        if not show["tl_status"]:
-            blame = show["translator"]
-        elif not show["ed_status"]:
-            blame = show["editor"]
-        elif not show["tm_status"]:
-            blame = show["timer"]
-        elif not show["ts_status"]:
-            blame = show["typesetter"]
-        elif not show["qc_status"]:
-            blame = show["qc"]
-
-        if self.factory.alias.resolve(blame) == victim:
+    for show in manager.master.modules["showtimes"].shows.values():
+        blame = yield manager.master.modules["showtimes"].substatus(show)
+        staller = yield manager.master.modules["alias"].resolve(blame.name)
+        if staller == victim:
             shows.append(show)
     if not shows:
-        self.msg(channel, "{} is not stalling anything right now.".format(victim))
-        return
+        raise manager.exception(u"{} is not stalling anything right now.".format(victim))
+
     parts = []
     for show in shows:
-        updated = dt.utcnow() - dt.utcfromtimestamp(show["updated"])
-        when = dt2ts(updated)
-        parts.append("{} ({} ago)".format(show["series"], when))
-    self.msg(channel, "{} is stalling: {}".format(victim, ", ".join(parts)))
+        updated = dt.utcnow() - dt.utcfromtimestamp(show.updated)
+        when = manager.master.modules["utils"].dt2ts(updated)
+        parts.append(u"{} ({} ago)".format(show.name.english, when))
+    irc.msg(channel, u"{} is stalling: {}".format(victim, u", ".join(parts)))

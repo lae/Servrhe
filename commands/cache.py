@@ -1,58 +1,25 @@
-from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks
-from twisted.internet.protocol import ClientCreator
-from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
-from lib.utils import cache
-import fnmatch, os
-
 config = {
     "access": "admin",
-    "help": ".cache [filter] [showname] || .cache premux eotena || Caches the premux for a show so that .chapters, .xdelta and .release work faster",
-    "reversible": False
+    "help": ".cache [showname] (--previous) || .cache eotena || Caches the premux for a show so that .chapters, .xdelta and .release work faster"
 }
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    if len(msg) < 2:
-        self.msg(channel, "Need a filter and show name")
-        return
-    name_filter, show = msg[0], " ".join(msg[1:])
-    show = self.factory.resolve(show, channel)
-    if show is None:
-        return
-    if not show["folder"]:
-        self.msg(channel, "No FTP folder given for {}".format(show["series"]))
-        return
-    episode = show["current_ep"] + 1
+def command(guid, manager, irc, channel, user, show, previous = False):
+    show = manager.master.modules["showtimes"].resolve(show)
+    if not show.folder.ftp:
+        raise manager.exception(u"No FTP folder given for {}".format(show.name.english))
 
-    ftp = yield ClientCreator(reactor, FTPClient, self.factory.config.ftp_user, self.factory.config.ftp_pass).connectTCP(self.factory.config.ftp_host, self.factory.config.ftp_port)
-    ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
-    filelist = FTPFileListProtocol()
-    yield ftp.list(".", filelist)
-    files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
-    premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
+    offset = 0 if previous else 1
+    episode = show.episode.current + offset
+    folder = "/{}/{:02d}/".format(show.folder.ftp, episode)
+    
+    premux = yield manager.master.modules["ftp"].getLatest(folder, "*.mkv")
+    cached = yield manager.master.modules["ftp"].isCached(premux)
 
-    if not premux:
-        self.msg(channel, "No premux found")
-        return
-    elif len(premux) > 1:
-        self.msg(channel, "Too many premux files match the filter: {}".format(", ".join(premux)))
-        return
-    else:
-        premux = premux[0]
-    premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
+    if cached:
+        raise manager.exception(u"{} already is cached. Message fugi if you need it re-cached.".format(premux))
 
+    irc.msg(channel, u"Caching {}".format(premux))
+    manager.dispatch("update", guid, u"Caching {}".format(premux))
+    yield manager.master.modules["ftp"].cache(folder, premux)
 
-    if os.path.isfile("{}/{}".format(self.factory.config.premux_dir, premux)):
-        self.msg(channel, "{} already is cached. Message fugi if you need it re-cached.".format(premux))
-        return
-
-    success = yield cache(self, user, ftp, premux, premux_len)
-
-    if success:
-        self.msg(channel, "{} cached.".format(premux))
-    else:
-        self.msg(channel, "Caching of {} failed.".format(premux))
-
-    yield ftp.quit()
-    ftp.fail(None)
+    irc.msg(channel, u"{} cached.".format(premux))

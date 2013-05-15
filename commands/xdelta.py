@@ -1,176 +1,108 @@
-from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks
-from twisted.internet.protocol import ClientCreator
 from twisted.internet.utils import getProcessValue
-from twisted.protocols.ftp import FTPClient, FTPFileListProtocol
-from lib.utils import cache, getPath, Downloader
-import uuid, os, fnmatch, shutil, binascii, re
+import binascii, fnmatch, os, re
 
 config = {
     "access": "admin",
-    "help": ".xdelta [filter] [show name] (--previous) (--no-chapters) || .xdelta premux eotena || Creates an xdelta for the current episode of the show. Requires an .mkv, .ass and .xml file. [filter] is used to limit what files are downloaded, with * as a wildcard. Use --previous for releasing a v2. Use --no-chapters if there is no chapters file.",
-    "reversible": False
+    "help": ".xdelta [show name] (--previous) (--no-chapters) (--roman) (--crc=HEX) || .xdelta eotena || Creates an xdelta for the current episode of the show. Requires an .mkv, .ass and .xml file. --previous re-muxes the last released episode. --no-chapters skips chapter muxing. --roman uses numerals for the episode number & CRC."
 }
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    if len(msg) < 2:
-        self.msg(channel, "Need a filter and show name")
-        return
-    offset, chapters_required = 1, True
-    while msg[-1][:2] == "--":
-        arg = msg.pop()
-        if arg == "--previous":
-            offset = 0
-        elif arg == "--no-chapters":
-            chapters_required = False
-    name_filter, show, fname = msg[0], " ".join(msg[1:]), "test.mkv"
+def command(guid, manager, irc, channel, user, show, previous = False, no_chapters = False, roman = False, crc = None):
+    show = manager.master.modules["showtimes"].resolve(show)
+    if not show.folder.ftp:
+        raise manager.exception(u"No FTP folder given for {}".format(show.name.english))
 
-    show = self.factory.resolve(show, channel)
-    if show is None:
-        return
-    if not show["folder"]:
-        self.msg(channel, "No FTP folder given for {}".format(show["series"]))
-        return
-    episode = show["current_ep"] + offset
-    guid = uuid.uuid4().hex
-    while os.path.exists(guid):
-        guid = uuid.uuid4().hex
-    os.mkdir(guid)
+    offset = 0 if previous else 1
+    episode = show.episode.current + offset
+    fname = "test.mkv"
+
+    if crc is not None and re.match("[0-9a-fA-F]{8}", crc) is None:
+        raise manager.exception(u"Invalid CRC")
 
     # Step 1: Search FTP for premux + script
-    ftp = yield ClientCreator(reactor, FTPClient, self.factory.config.ftp_user, self.factory.config.ftp_pass).connectTCP(self.factory.config.ftp_host, self.factory.config.ftp_port)
-    ftp.changeDirectory("/{}/{:02d}/".format(show["folder"], episode))
-    filelist = FTPFileListProtocol()
-    yield ftp.list(".", filelist)
-    files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
-    premux = fnmatch.filter(files, "*{}*.mkv".format(name_filter))
-    script = fnmatch.filter(files, "*{}*.ass".format(name_filter))
-    chapters = fnmatch.filter(files, "*{}*.xml".format(name_filter))
+    folder = "/{}/{:02d}/".format(show.folder.ftp, episode)
+    premux = yield manager.master.modules["ftp"].getLatest(folder, "*.mkv")
+    script = yield manager.master.modules["ftp"].getLatest(folder, "*.ass")
+    chapters = yield manager.master.modules["ftp"].getLatest(folder, "*.xml")
 
     if not premux:
-        self.msg(channel, "No premux found")
-        return
-    elif len(premux) > 1:
-        self.msg(channel, "Too many premux files match the filter: {}".format(", ".join(premux)))
-        return
-    else:
-        premux = premux[0]
+        raise manager.exception(u"No premux found")
     if not script:
-        self.msg(channel, "No script found")
-        return
-    elif len(script) > 1:
-        self.msg(channel, "Too many script files match the filter: {}".format(", ".join(script)))
-        return
-    else:
-        script = script[0]
-    if chapters_required:
-        if not chapters:
-            self.msg(channel, "No chapters found")
-            return
-        elif len(chapters) > 1:
-            self.msg(channel, "Too many chapter files match the filter: {}".format(", ".join(chapters)))
-            return
-        else:
-            chapters = chapters[0]
+        raise manager.exception(u"No script found")
+    if not no_chapters and not chapters:
+        raise manager.exception(u"No chapters found")
 
     # Step 2: Download that shit
-    if not os.path.isfile("{}/{}".format(self.factory.config.premux_dir, premux)):
-        premux_len = [x["size"] for x in filelist.files if x["filename"] == premux][0]
-        success = yield cache(self, user, ftp, premux, premux_len)
-        if not success:
-            self.msg(channel, "Aborted creating xdelta for {}: Download of premux file had incorrect size.".format(show["series"]))
-            yield ftp.quit()
-            ftp.fail(None)
-            return
-    shutil.copyfile("{}/{}".format(self.factory.config.premux_dir, premux), "{}/{}".format(guid, premux))
-    script_len = [x["size"] for x in filelist.files if x["filename"] == script][0]
-    script_downloader = Downloader("{}/{}".format(guid, script))
-    yield ftp.retrieveFile(script, script_downloader)
-    if script_downloader.done() != script_len:
-        self.msg(channel, "Aborted creating xdelta for {}: Download of script file had incorrect size.".format(show["series"]))
-        yield ftp.quit()
-        ftp.fail(None)
-        return
-    if chapters_required:
-        chapters_len = [x["size"] for x in filelist.files if x["filename"] == chapters][0]
-        chapters_downloader = Downloader("{}/{}".format(guid, chapters))
-        yield ftp.retrieveFile(chapters, chapters_downloader)
-        if chapters_downloader.done() != chapters_len:
-            self.msg(channel, "Aborted creating xdelta for {}: Download of chapter file had incorrect size.".format(show["series"]))
-            yield ftp.quit()
-            ftp.fail(None)
-            return
-        self.notice(user, "Found premux, script and chapters: {}, {} and {}".format(premux, script, chapters))
+    yield manager.master.modules["ftp"].getFromCache(folder, premux, guid)
+    yield manager.master.modules["ftp"].get(folder, script, guid)
+    if not no_chapters:
+        yield manager.master.modules["ftp"].get(folder, chapters, guid)
+        irc.msg(channel, u"Found premux, script and chapters: {}, {} and {}".format(premux, script, chapters))
     else:
-        self.notice(user, "Found premux and script: {} and {}".format(premux, script))
+        irc.msg(channel, u"Found premux and script: {} and {}".format(premux, script))
 
     # Step 3: Download fonts
-    filelist = FTPFileListProtocol()
-    yield ftp.list("fonts", filelist)
-    files = [x["filename"] for x in filelist.files if x["filetype"] != "d"]
-    fonts = []
-    for font in files:
-        font_len = [x["size"] for x in filelist.files if x["filename"] == font][0]
-        font_downloader = Downloader("{}/{}".format(guid, font))
-        yield ftp.retrieveFile("fonts/{}".format(font), font_downloader)
-        if font_downloader.done() != font_len:
-            self.notice(user, "Failed to download font: {}. Proceeding without it.".format(font))
-        else:
-            fonts.append(font)
-    self.notice(user, "Fonts downloaded. ({})".format(", ".join(fonts)))
+    yield manager.master.modules["ftp"].uploadFonts(folder)
+    fonts = yield manager.master.modules["ftp"].downloadFonts(folder, guid)
+    irc.msg(channel, u"Fonts downloaded. ({})".format(u", ".join(fonts)))
 
-    # Step 4: MKVMerge
-    arguments = ["-o", "{}/{}".format(guid, fname)]
-    if chapters_required:
-        arguments.extend(["--no-chapters", "--chapters", "{}/{}".format(guid, chapters)])
+    # Step 4: Verify fonts
+    needed_fonts = manager.master.modules["subs"].getFonts(guid, script)
+    available_fonts = set()
     for font in fonts:
-        arguments.extend(["--attachment-mime-type", "application/x-truetype-font", "--attach-file", "{}/{}".format(guid, font)])
-    arguments.extend(["{}/{}".format(guid, premux), "{}/{}".format(guid, script)])
-    code = yield getProcessValue(getPath("mkvmerge"), args=arguments, env=os.environ)
-    if code != 0:
-        self.msg(channel, "Aborted creating xdelta for {}: Couldn't merge premux and script.".format(show["series"]))
-        yield ftp.quit()
-        ftp.fail(None)
-        return
-    self.notice(user, "Merged premux and script")
+        name = manager.master.modules["subs"].getFontName(guid, font)
+        if name:
+            available_fonts.add(name)
 
-    # Step 5: Determine filename
+    # Step 5: MKVMerge
+    arguments = ["-o", os.path.join(guid, fname)]
+    if not no_chapters:
+        arguments.extend(["--no-chapters", "--chapters", os.path.join(guid, chapters)])
+    for font in available_fonts:
+        arguments.extend(["--attachment-mime-type", "application/x-truetype-font", "--attach-file", os.path.join(guid, font)])
+    arguments.extend([os.path.join(guid, premux), os.path.join(guid, script)])
+    code = yield getProcessValue(manager.master.modules["utils"].getPath("mkvmerge"), args=arguments, env=os.environ)
+    if code != 0:
+        raise manager.exception(u"Aborted creating xdelta for {}: Couldn't merge premux and script.".format(show.name.english))
+    irc.notice(user, u"Merged premux and script")
+
+    # Step 6: Force CRC
+    try:
+        with open(os.path.join(guid, fname), "r+b") as f:
+            f.seek(4224, 0)
+            f.write("SERVRHE")
+    except:
+        raise manager.exception(u"Aborted creating xdelta for {}: Couldn't watermark completed file.".format(show.name.english))
+
+    if crc is not None:
+        manager.master.modules["crc"].patch(os.path.join(guid, fname), crc, 4232)
+
+    # Step 7: Determine filename
     match = re.search("(v\d+).ass", script)
     version = match.group(1) if match is not None else ""
     try:
-        with open("{}/{}".format(guid, fname), "rb") as f:
-            crc = "{:08X}".format(binascii.crc32(f.read()) & 0xFFFFFFFF)
+        with open(os.path.join(guid, fname), "rb") as f:
+            crc = binascii.crc32(f.read()) & 0xFFFFFFFF
     except:
-        self.msg(channel, "Aborted creating xdelta for {}: Couldn't open completed file for CRC verification.".format(show["series"]))
-        yield ftp.quit()
-        ftp.fail(None)
-        return
-    nfname = "[Commie] {} - {:02d}{} [{}].mkv".format(show["series"], episode, version, crc)
-    os.rename("{}/{}".format(guid, fname), "{}/{}".format(guid, nfname))
+        raise manager.exception(u"Aborted creating xdelta for {}: Couldn't open completed file for CRC verification.".format(show.name.english))
+
+    if roman:
+        version = "v{}".format(int_to_roman(int(version[:1]))) if version else ""
+        episode = manager.master.modules["utils"].intToRoman(episode)
+        crc = manager.master.modules["utils"].intToRoman(crc)
+        nfname = u"[Commie] {} - {}{} [{}].mkv".format(show.name.english, episode, version, crc)
+    else:
+        nfname = u"[Commie] {} - {:02d}{} [{:08X}].mkv".format(show.name.english, episode, version, crc)
+    os.rename(os.path.join(guid, fname), os.path.join(guid, nfname))
     fname = nfname
-    self.notice(user, "Determined final filename to be {}".format(fname))
+    irc.msg(channel, u"Determined final filename to be {}".format(fname))
 
-    # Step 5: Make that xdelta
+    # Step 8: Make that xdelta
     xdelta = script.replace(".ass",".xdelta")
-    code = yield getProcessValue(getPath("xdelta3"), args=["-f","-e","-s","{}/{}".format(guid, premux),"{}/{}".format(guid, fname),"{}/{}".format(guid, xdelta)], env=os.environ)
+    code = yield getProcessValue(manager.master.modules["utils"].getPath("xdelta3"), args=["-f","-e","-s", os.path.join(guid, premux), os.path.join(guid, fname), os.path.join(guid, xdelta)], env=os.environ)
     if code != 0:
-        self.msg(channel, "Aborted creating xdelta for {}: Couldn't create xdelta.".format(show["series"]))
-        yield ftp.quit()
-        ftp.fail(None)
-        return
-    self.notice(user, "Made xdelta")
+        raise manager.exception(u"Aborted creating xdelta for {}: Couldn't create xdelta.".format(show.name.english))
+    irc.notice(user, u"Made xdelta")
 
-    # Step 6: Upload that xdelta
-    store, finish = ftp.storeFile("{}".format(xdelta))
-    sender = yield store
-    with open("{}/{}".format(guid, xdelta), "rb") as f:
-        sender.transport.write(f.read())
-    sender.finish()
-    yield finish
-    self.msg(channel, "xdelta for {} uploaded".format(show["series"]))
-
-    # Step 7: Clean up
-    yield ftp.quit()
-    ftp.fail(None)
-    shutil.rmtree(guid, True)
+    # Step 9: Upload that xdelta
+    yield manager.master.modules["ftp"].put(guid, xdelta, folder)
+    irc.msg(channel, u"xdelta for {} uploaded".format(show.name.english))

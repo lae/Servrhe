@@ -1,23 +1,10 @@
-from twisted.internet.defer import inlineCallbacks
-
 config = {
     "access": "public",
-    "help": ".whodoes [position] [show name] || .whodoes timer Accel World || Reports who does a job for a show",
-    "reversible": False
+    "help": ".whodoes [position] [show name] || .whodoes timer Accel World || Reports who does a job for a show"
 }
 
-@inlineCallbacks
-def command(self, user, channel, msg):
-    position = self.getPosition(msg[0])
-    if position is None:
-        self.msg(channel, "%s is not a valid position. Try %s, or %s." % (msg[0], ", ".join(self.factory.config.positions[:-1]), self.factory.config.positions[-1]))
-        return
-    show = self.factory.resolve(" ".join(msg[1:]), channel)
-    if show is None:
-        return
-    data = yield self.factory.load("show",show["id"],position)
-    if "status" in data and not data["status"]:
-        self.msg(channel, data["message"])
-        return
-    data = data["results"]
-    self.msg(channel, "%s is the %s for %s" % (data["name"], data["position"], show["series"]))
+def command(guid, manager, irc, channel, user, position, show):
+    position = yield manager.master.modules["showtimes"].getPosition(position)
+    show = manager.master.modules["showtimes"].resolve(show)
+    name = getattr(show, position).name
+    irc.msg(channel, u"{} is the {} for {}".format(name, position, show.name.english))

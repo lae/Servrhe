@@ -1,10 +1,20 @@
-import mimetypes
-import os
-import urllib
+# -*- coding: utf-8 -*-
 
 from twisted.internet import defer
 from twisted.web.iweb import IBodyProducer
 from zope.interface import implements
+
+import mimetypes, os, urllib
+
+dependencies = []
+
+class Module(object):
+    def __init__(self, master):
+        self.master = master
+        self.MultiPartProducer = MultiPartProducer
+
+    def stop(self):
+        pass
 
 # Ganked from https://github.com/mariano/pyfire/blob/master/pyfire/twistedx/producer.py
 class MultiPartProducer:

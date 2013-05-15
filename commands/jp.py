@@ -1,14 +1,11 @@
 config = {
     "access": "public",
-    "help": ".jp [show name] || .jp Accel World || Prints the Japanese title of the show",
-    "reversible": False
+    "help": ".jp [show name] || .jp Accel World || Prints the Japanese title of the show"
 }
 
-def command(self, user, channel, msg):
-    show = self.factory.resolve(" ".join(msg), channel)
-    if show is None:
-        return
-    if show["series_jp"]:
-        self.msg(channel, u"{} -> {}".format(show["series"], show["series_jp"]))
+def command(guid, manager, irc, channel, user, show):
+    show = manager.master.modules["showtimes"].resolve(show)
+    if show.name.japanese:
+        irc.msg(channel, u"{} -> {}".format(show.name.english, show.name.japanese))
     else:
-        self.msg(channel, u"{} does not have a Japanese title stored in showtimes.".format(show["series"]))
+        irc.msg(channel, u"{} does not have a Japanese title stored in showtimes.".format(show.name.english))

@@ -1,14 +1,12 @@
 config = {
     "access": "admin",
-    "help": ".topicpercent [percentage] || .topicpercent 100.00 || Sets the Mahoyo progress percentage",
-    "reversible": False
+    "help": ".topicpercent [percentage] || .topicpercent 100.00 || Sets the Mahoyo progress percentage"
 }
 
-def command(self, user, channel, msg):
-    if not msg:
-        return self.msg(channel, "No percentage given")
+def command(guid, manager, irc, channel, user, percentage):
     try:
-        self.factory.config.topic[2] = float(msg[0])
-        self.factory.update_topic()
+        percentage = float(percentage)
     except ValueError:
-        self.msg(channel, "Invalid percentage (must be a float)")
+        raise manager.exception(u"Invalid percentage (must be a float)")
+    yield manager.master.modules["showtimes"].setPercentage(percentage)
+    yield manager.master.modules["showtimes"].updateTopic()

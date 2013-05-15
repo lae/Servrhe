@@ -1,9 +1,9 @@
 config = {
     "access": "owner",
-    "help": ".reload || .reload || Reloads all commands",
+    "help": ".reload [modules] (--blacklist) || .reload commands || Reloads specified modules",
     "reversible": False
 }
 
-def command(self, user, channel, msg):
-    self.factory.pluginmanager.load()
-    self.msg(channel, "Plugins reloaded")
+def command(guid, manager, irc, channel, user, modules, blacklist = False):
+    yield manager.master.loadModules(modules.split(" "), blacklist)
+    irc.msg(channel, u"Modules reloaded")

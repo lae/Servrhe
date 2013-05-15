@@ -1,12 +1,5 @@
 *.py[cod]
 
-# Config file
-servrhe.json
-markov.json
-alias.json
-crunchyroll.json
-funimation.json
-
 # Secrets
-lib/crunchy.py
-lib/funi.py
+modules/crunchy.py
+modules/funi.py
