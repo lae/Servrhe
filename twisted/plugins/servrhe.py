@@ -1,24 +1,5 @@
 # -*- coding: utf-8 -*-
 
-"""
-from twisted.python.log import PythonLoggingObserver
-from raven.conf import setup_logging
-from raven.handlers.logging import SentryHandler
-import logging
-
-observer = PythonLoggingObserver()
-observer.start()
-
-DSN = "http://37183285b48142eeaa42e27a2a459c9d:1cd2aa12aa694d9699b77173a8e251b7@sentry.wessie.info/6"
-handler = SentryHandler(DSN)
-
-logging.getLogger().addHandler(handler)
-logging.getLogger().setLevel(logging.ERROR)
-"""
-#from twisted.internet.defer import setDebugging
-#setDebugging(True)
-
-
 from twisted.application import internet, service
 from twisted.internet import defer, protocol, reactor
 from twisted.plugin import IPlugin
@@ -26,7 +7,6 @@ from twisted.python import log, usage
 from twisted.web import client, server, resource
 from zope.interface import implements
 import copy, functools, inspect, pkgutil, sys, txmongo
-
 
 class QuietHTTP11ClientFactory(client._HTTP11ClientFactory):
     noisy = False
@@ -39,8 +19,6 @@ class Agent(client.Agent):
         if pool is None:
             pool = QuietHTTPConnectionPool(reactor, False)
         client.Agent.__init__(self, reactor, pool=pool, **kwargs)
-
-
 
 class Options(usage.Options):
     optParameters = [
@@ -130,7 +108,7 @@ class Master(service.MultiService):
                 unloaded = ", ".join([x[0] for x in pending])
                 self.err("Dependency error occured. Failed to load: {}", unloaded)
                 break
-        self.log("Loaded modules: {}", ", ".join(self.modules.keys()))
+        self.log("Loaded modules: {}", ", ".join(sorted(self.modules.keys())))
 
     def log(self, message, *args, **kwargs):
         cls = kwargs["cls"] if "cls" in kwargs else "Master"
@@ -143,8 +121,6 @@ class Master(service.MultiService):
         log.err(None, message.format(*args).encode("utf8"), system="{}.{}".format(cls, func))
 
     def dispatch(self, cls, name, *args):
-        if cls not in ("irc",):
-            self.log("Dispatch: {}_{} {!r}", cls, name, args)
         for module in self.modules.values():
             method = getattr(module, "{}_{}".format(cls, name), None)
             if callable(method):

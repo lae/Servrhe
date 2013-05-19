@@ -160,5 +160,6 @@ class Module(object):
         returnValue(user not in banusers)
 
     def filter_quotes(self, message, user, channel):
-        match = re.match("\[Quote\] #\d+ added by .* ago.", message)
-        return not (user == "Quotes" and match)
+        match1 = re.match("\[Quote\] #\d+ added by .* ago.", message)
+        match2 = re.match("\[Quote\] \d+ matches found: #[\d,]+", message)
+        return not (user == "Quotes" and (match1 or match2))

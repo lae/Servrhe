@@ -9,7 +9,11 @@ import fnmatch, os, shutil
 dependencies = ["config", "commands"]
 
 def parseDate(date):
-    return dt.strptime(date, "%b %d %H:%M")
+    if "  " in date:
+        d = dt.strptime(date, "%b %d  %Y")
+    else:
+        d = dt.strptime(date, "%b %d %H:%M")
+    return d
 
 class Downloader(protocol.Protocol):
     def __init__(self, name, deferred = None, limit = None):
@@ -141,7 +145,7 @@ class Module(object):
             raise exception(u"No files in FTP match given {}".format(filter))
 
         files = [(x["filename"], parseDate(x["date"])) for x in filelist.files if x["filename"] in files]
-        files.sort(lambda x: x[1], reverse=True)
+        files.sort(key=lambda x: x[1], reverse=True)
         returnValue(files[0][0])
 
     @inlineCallbacks
@@ -294,7 +298,7 @@ class Module(object):
 
             for font in fonts:
                 downloader = Downloader(os.path.join(destination, font))
-                yield ftp.retrieveFile(os.path.join(fontdir, font), downloader)
+                yield ftp.retrieveFile(os.path.join(fontdir, font).encode("utf8"), downloader)
 
         finally:
             yield self.releaseConnection(ftp)

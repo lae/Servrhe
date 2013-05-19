@@ -1,4 +1,4 @@
-from twisted.internet.utils import getProcessValue
+from twisted.internet.utils import getProcessOutputAndValue
 import binascii, fnmatch, os, re
 
 config = {
@@ -22,14 +22,8 @@ def command(guid, manager, irc, channel, user, show, previous = False, no_chapte
     folder = "/{}/{:02d}/".format(show.folder.ftp, episode)
     premux = yield manager.master.modules["ftp"].getLatest(folder, "*.mkv")
     script = yield manager.master.modules["ftp"].getLatest(folder, "*.ass")
-    chapters = yield manager.master.modules["ftp"].getLatest(folder, "*.xml")
-
-    if not premux:
-        raise manager.exception(u"No premux found")
-    if not script:
-        raise manager.exception(u"No script found")
-    if not no_chapters and not chapters:
-        raise manager.exception(u"No chapters found")
+    if not no_chapters:
+        chapters = yield manager.master.modules["ftp"].getLatest(folder, "*.xml")
 
     # Step 2: Download that shit
     yield manager.master.modules["ftp"].getFromCache(folder, premux, guid)
@@ -52,16 +46,23 @@ def command(guid, manager, irc, channel, user, show, previous = False, no_chapte
         name = manager.master.modules["subs"].getFontName(guid, font)
         if name:
             available_fonts.add(name)
+    remaining_fonts = needed_fonts - available_fonts
+    if remaining_fonts:
+        required = ", ".join(list(remaining_fonts))
+        required = required.decode("utf8")
+        raise manager.exception(u"Aborted creating xdelta for {}: Missing fonts: {}".format(show.name.english, required))
 
     # Step 5: MKVMerge
     arguments = ["-o", os.path.join(guid, fname)]
     if not no_chapters:
         arguments.extend(["--no-chapters", "--chapters", os.path.join(guid, chapters)])
-    for font in available_fonts:
+    for font in fonts:
         arguments.extend(["--attachment-mime-type", "application/x-truetype-font", "--attach-file", os.path.join(guid, font)])
     arguments.extend([os.path.join(guid, premux), os.path.join(guid, script)])
-    code = yield getProcessValue(manager.master.modules["utils"].getPath("mkvmerge"), args=arguments, env=os.environ)
+    out, err, code = yield getProcessOutputAndValue(manager.master.modules["utils"].getPath("mkvmerge"), args=arguments, env=os.environ)
     if code != 0:
+        manager.log(out)
+        manager.log(err)
         raise manager.exception(u"Aborted creating xdelta for {}: Couldn't merge premux and script.".format(show.name.english))
     irc.notice(user, u"Merged premux and script")
 
@@ -98,8 +99,10 @@ def command(guid, manager, irc, channel, user, show, previous = False, no_chapte
 
     # Step 8: Make that xdelta
     xdelta = script.replace(".ass",".xdelta")
-    code = yield getProcessValue(manager.master.modules["utils"].getPath("xdelta3"), args=["-f","-e","-s", os.path.join(guid, premux), os.path.join(guid, fname), os.path.join(guid, xdelta)], env=os.environ)
+    out, err, code = yield getProcessOutputAndValue(manager.master.modules["utils"].getPath("xdelta3"), args=["-f","-e","-s", os.path.join(guid, premux), os.path.join(guid, fname), os.path.join(guid, xdelta)], env=os.environ)
     if code != 0:
+        manager.log(out)
+        manager.log(err)
         raise manager.exception(u"Aborted creating xdelta for {}: Couldn't create xdelta.".format(show.name.english))
     irc.notice(user, u"Made xdelta")
 

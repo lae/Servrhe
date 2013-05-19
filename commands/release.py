@@ -1,3 +1,4 @@
+from twisted.internet.defer import DeferredList
 from twisted.internet.utils import getProcessOutputAndValue
 import binascii, fnmatch, os, re
 
@@ -70,14 +71,13 @@ def command(guid, manager, irc, channel, user, show, previous = False, comment =
     irc.notice(user, u"Created torrent")
 
     # Step 3: Upload episode to XDCC server
-    irc.notice(user, u"Uploading to XDCC")
-    yield manager.master.modules["ftp"].putXDCC(guid, complete, show.folder.xdcc)
-    irc.notice(user, u"Uploaded to XDCC")
-
     # Step 4: Upload episode to seedbox
-    irc.notice(user, u"Uploading to seedbox")
-    yield manager.master.modules["ftp"].putSeedbox(guid, complete)
-    irc.notice(user, u"Uploaded to seedbox")
+    d1 = manager.master.modules["ftp"].putXDCC(guid, complete, show.folder.xdcc)
+    d2 = manager.master.modules["ftp"].putSeedbox(guid, complete)
+
+    irc.notice(user, u"Uploading to XDCC and seedbox")
+    yield DeferredList([d1, d2])
+    irc.notice(user, u"Uploaded to XDCC and seedbox")
 
     # Step 5: Start seeding torrent
     yield manager.master.modules["ftp"].putTorrent(guid, torrent)
@@ -102,13 +102,15 @@ def command(guid, manager, irc, channel, user, show, previous = False, comment =
     except:
         irc.msg(channel, u"Couldn't create blog post. Continuing to release {} regardless.".format(show.name.english))
     else:
-        irce.notice(user, u"Created blog post")
+        irc.notice(user, u"Created blog post")
 
     # Step 10: Mark show finished on showtimes
-    try:
-        yield manager.master.modules["showtimes"].finished(show)
-    except:
-        irc.msg(channel, u"Failed to mark show as done on showtimes")
+    if not previous:
+        try:
+            yield manager.master.modules["showtimes"].finished(show)
+        except:
+            irc.msg(channel, u"Failed to mark show as done on showtimes")
+
     irc.msg(channel, u"{} released. Torrent @ {}".format(show.name.english, info_link))
 
     # Step 11: Update the topic

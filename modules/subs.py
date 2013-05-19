@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-import os, re, time
+import os, re, struct, time
 
 dependencies = []
 
@@ -39,15 +39,21 @@ class Module(object):
     def intToTime(self, i, short = False):
         return intToTime(i, short)
     
-    def getFonts(folder, filename):
+    def getFonts(self, folder, filename):
         subs = SubParser(os.path.join(folder, filename))
-        fonts = set([x["Fontname"] for x in subs.styles.values()])
-        for event in subs.events:
+        styles = dict([(x["Name"], x["Fontname"]) for x in subs.styles.values()])
+        fonts = set()
+        for line, event in enumerate(subs.events):
+            if event["key"] != "Dialogue":
+                continue
+            if event["Style"] not in styles:
+                raise exception(u"Invalid style on line {:03d}: {}", line + 1, event["Style"])
+            fonts.add(styles[event["Style"]])
             # Warning: This will catch all instances of \fnXXX, not just ASS tags
-            fonts += re.findall("\\fn([^\\}]+)", event["Text"])
+            fonts |= set(re.findall("\\fn([^\\}]+)", event["Text"]))
         return fonts
 
-    def getFontName(folder, filename):
+    def getFontName(self, folder, filename):
         tags = {}
         ntoffset, offset, records = None, None, None
         with open(os.path.join(folder, filename), "rb") as f:
@@ -72,10 +78,10 @@ class Module(object):
             offset = struct.unpack_from(">H", data, ntoffset + i*12 + 16)[0]
 
             value = data[storage + offset:storage + offset + length]
-            value = u"".join([x for x in value if x != "\x00"])
+            value = "".join([x for x in value if x != "\x00"])
             tags[id] = value
 
-        return tags[1] if 1 in tags else None
+        return tags[1].decode("utf8") if 1 in tags else None
 
 class SubParser(object):
     info_output = ("Title","PlayResX","PlayResY","ScaledBorderAndShadow","ScriptType","WrapStyle")

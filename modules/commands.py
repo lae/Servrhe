@@ -54,7 +54,7 @@ class Module(object):
     @inlineCallbacks
     def loadCommands(self):
         commands = {}
-        path = yield self.config.get("path","commands_2")
+        path = yield self.config.get("path","commands")
         for loader, name, ispkg in pkgutil.iter_modules([path]):
             if ispkg:
                 continue
@@ -123,7 +123,7 @@ class Module(object):
         args = []
         while message:
             if message.startswith('"'):
-                arg, _, message = message.partition('" ')
+                arg, _, message = message[1:].partition('" ')
                 if not message and arg[-1] == '"':
                     arg = arg[:-1]
                 args.append(arg)

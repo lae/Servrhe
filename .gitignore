@@ -1,5 +1,7 @@
 *.py[cod]
 
+fonts/
+
 # Secrets
 modules/crunchy.py
 modules/funi.py

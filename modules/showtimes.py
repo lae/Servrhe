@@ -83,7 +83,7 @@ class Module(object):
             if len(r) > 5:
                 extra = "and {:d} more.".format(len(r) - 5)
                 r = r[:5] + [extra]
-            raise exception(u"Show name not specific, found: {}".format(u", ".join(matches)))
+            raise exception(u"Show name not specific, found: {}".format(u", ".join(r)))
         elif not matches:
             raise exception(u"Show name not found.")
         return matches[0]
@@ -106,12 +106,11 @@ class Module(object):
         parts = [u"\u000308,04\u262d Commie Subs \u262d\u000f"]
         releases = []
 
-        for show in self.shows.values():
-            if show.episode.current < show.episode.total:
-                releases.append((show.name.abbreviation, show.episode.current, show.released))
-        releases.sort(key=lambda x: x[2], reverse=True)
+        shows = yield self.load("shows", "current_episodes")
+        shows = [(s["abbr"], s["current_ep"], s["last_release"]) for s in shows]
+        shows.sort(key=lambda x: x[2], reverse=True)
 
-        parts.append(u", ".join(["{} {:02d}".format(r[0], r[1]) for r in releases[:8]]))
+        parts.append(u", ".join(["{} {:02d}".format(s[0], s[1]) for s in shows[:8]]))
         parts.append(u"Mahoyo progress: {:0.2f}%".format(topic["percentage"]))
 
         if topic["text"] is not None:

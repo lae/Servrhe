@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 
 from twisted.internet import reactor
-from twisted.internet.defer import inlineCallbacks
+from twisted.internet.defer import inlineCallbacks, returnValue
 from twisted.web.client import CookieAgent, FileBodyProducer
 from twisted.web.http_headers import Headers
 from StringIO import StringIO
-import cookielib, os, random, urllib
+import cookielib, os, random, re, urllib
 
 dependencies = ["config", "commands", "utils", "multipart"]
 
@@ -45,10 +45,10 @@ class Module(object):
             raise exception(u"Couldn't login to Nyaa.")
 
         name, twitter = random.choice(twitters.items())
-        twitter_list = self.master.modules["utils"].rheinbowify('Follow [url="https://twitter.com/RHExcelion"]@RHExcelion[/url], [url="https://twitter.com/{}"]@{}[/url], and the rest of Commie at [url="https://twitter.com/RHExcelion/commie-devs"]@Commie-Devs[/url].'.format(twitter, name))
+        twitter_list = self.master.modules["utils"].rheinbowify('[b]Follow [u][url="https://twitter.com/RHExcelion"]@RHExcelion[/url][/u], [u][url="https://twitter.com/{}"]@{}[/url][/u], and the rest of Commie at [u][url="https://twitter.com/RHExcelion/commie-devs"]@Commie-Devs[/url][/u].[/b]'.format(twitter, name))
 
         post_data = self.master.modules["multipart"].MultiPartProducer({"torrent": os.path.join(folder, filename)},{
-            "name": complete,
+            "name": filename,
             "catid": "1_37",
             "info": "#commie-subs@irc.rizon.net",
             "description": "Visit us at [url]http://commiesubs.com[/url] for the latest updates and news.\n{}".format(twitter_list),

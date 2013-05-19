@@ -25,6 +25,7 @@ class Module(object):
             raise exception(u"No blog username or password in config")
 
         blog = Proxy("http://commiesubs.com/xmlrpc.php")
+        blog.queryFactory.noisy = False
         slug = show.blog.split("/")[-2]
         categories = ["The Bread Lines"]
         result = yield blog.callRemote("wp.getTerms", 0, user, passwd, "category")
